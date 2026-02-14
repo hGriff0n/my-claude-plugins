@@ -18,7 +18,7 @@
     },
     {
       "name": "daily",
-      "source": "./plugins/daily-patterns"
+      "source": "github:hgriff0n/daily-patterns-pack"
     }
   ]
 }
