@@ -17,11 +17,8 @@
       "source": "./plugins/review"
     },
     {
-      "name": "daily-patterns-pack",
-      "source": {
-        "source": "github",
-        "repo": "hGriff0n/daily-patterns-pack"
-      }
+      "name": "daily-patterns",
+      "source": "./plugins/daily-patterns"
     }
   ]
 }
