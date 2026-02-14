@@ -19,8 +19,8 @@
     {
       "name": "daily",
       "source": {
-        "source": "github",
-        "repo": "hgriff0n/daily-patterns-pack"
+        "source": "url",
+        "repo": "https://github.com/hgriff0n/daily-patterns-pack.git"
       }
     }
   ]
