@@ -11,6 +11,10 @@
     {
       "name": "task-workflow",
       "source": "./plugins/task-workflow"
+    },
+    {
+      "name": "review",
+      "source": "./plugins/review"
     }
   ]
 }
