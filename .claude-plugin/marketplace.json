@@ -17,6 +17,10 @@
       "source": "./plugins/review"
     },
     {
+      "name": "windows",
+      "source": "./plugins/windows"
+    },
+    {
       "name": "daily",
       "source": {
         "source": "url",
