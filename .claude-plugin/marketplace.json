@@ -17,7 +17,7 @@
       "source": "./plugins/review"
     },
     {
-      "name": "daily-patterns",
+      "name": "daily",
       "source": "./plugins/daily-patterns"
     }
   ]
