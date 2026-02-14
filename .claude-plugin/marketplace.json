@@ -18,7 +18,10 @@
     },
     {
       "name": "daily",
-      "source": "github:hgriff0n/daily-patterns-pack"
+      "source": {
+        "source": "github",
+        "repo": "hgriff0n/daily-patterns-pack"
+      }
     }
   ]
 }
