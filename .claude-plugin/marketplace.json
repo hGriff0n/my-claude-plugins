@@ -1,0 +1,16 @@
+{
+  "name": "my-plugins",
+  "owner": {
+    "name": "hgriff0n"
+  },
+  "plugins": [
+    {
+      "name": "effort-workflow",
+      "source": "./plugins/effort-workflow"
+    },
+    {
+      "name": "task-workflow",
+      "source": "./plugins/task-workflow"
+    }
+  ]
+}
