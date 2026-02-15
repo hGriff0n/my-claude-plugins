@@ -77,7 +77,7 @@ def is_review_file(file) -> bool:
     return 'n/review' in tags
 
 
-def get_valid_routines(vault_root: Path) -> List[str], Path:
+def get_valid_routines(vault_root: Path) -> Tuple[List[str], Path]:
     """Get list of valid routine names (files with n/review tag)."""
     routines_dir = vault_root / "areas" / "__metadata" / "routines"
 
