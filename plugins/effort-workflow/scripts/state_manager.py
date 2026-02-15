@@ -5,7 +5,7 @@ from pathlib import Path
 from utils import get_effort_dir
 
 STATE_FILE = Path.home() / ".cache" / "efforts" / "efforts.json"
-VAULT_DIR = get_effort_dir()
+EFFORT_BASE_DIR = get_effort_dir()
 
 # TODO: me - This needs to be improved to handle more schemas
 def new_state():
@@ -27,14 +27,15 @@ def get_focus():
 def set_focus(name, unfocus=False):
     state = load_state()
     # Validate effort exists
-    effort_dir = VAULT_DIR / name
+    effort_dir = EFFORT_BASE_DIR / name
     if not effort_dir.exists():
         raise Exception(f"Error: Effort '{name}' does not exist.")
     
     if unfocus:
-        del state['focus']
+        state.pop('focus', None)
     else:
         state["focus"] = name
+        print(effort_dir)
 
     save_state(state)
 
@@ -63,7 +64,7 @@ def set_status(name, status):
 
 def scan_pkm(args=None):
     state = new_state()
-    for file in VAULT_DIR.iterdir():
+    for file in EFFORT_BASE_DIR.iterdir():
         if file.name in ['__ideas', 'dashboard.base']:
             continue
 

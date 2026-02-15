@@ -22,9 +22,15 @@ State is tracked in `~/.cache/efforts/efforts.json` with schema:
 }
 ```
 
+### Session Model
+
+Focusing, creating, or activating an effort **spawns a new Claude Code tab** (via `/windows:spawn-session`) with cwd set to the effort directory. Each tab owns its context naturally through cwd. The JSON focus field is kept for backwards compatibility when running from the vault root.
+
 ## Core Script
 
 All commands use: `${CLAUDE_PLUGIN_ROOT}/scripts/efforts.py`
+
+Python scripts print the effort directory path to stdout after state changes, which the command files use to pass to `/windows:spawn-session`.
 
 ## Commands
 
@@ -34,9 +40,9 @@ All commands use: `${CLAUDE_PLUGIN_ROOT}/scripts/efforts.py`
 python efforts.py new <name>
 ```
 
-Creates effort directory at `efforts/<name>` relative to vault root, initializes with README.md from template, marks active, and sets focus.
+Creates effort directory at `efforts/<name>` relative to vault root, initializes with README.md from template, marks active, and sets focus. Prints the effort directory path.
 
-**Post-creation**: Invoke `/task-workflow:init <path>` with the newly created effort directory path.
+**Post-creation**: Invokes `/task-workflow:init <path>` with the effort directory, then spawns a new Claude Code tab in that directory via `/windows:spawn-session`.
 
 **Quote names with spaces**: `python efforts.py new "My Project"`
 
@@ -59,17 +65,25 @@ Prints the name of the currently focused effort. Returns empty/null if no effort
 python efforts.py focus <name>
 ```
 
-Sets focus to an existing effort without changing its active/backlog status.
+Sets focus to an existing effort without changing its active/backlog status. Prints the effort directory path.
+
+**Post-focus**: Spawns a new Claude Code tab in the effort directory via `/windows:spawn-session`.
 
 **Fuzzy names**: If user provides partial name, confirm exact effort name before running.
 
-### Unfocus
+### Unfocus (Shutdown Sequence)
 
 ```bash
 python efforts.py focus <name> --unfocus
 ```
 
-Clears the current focus. If user doesn't specify name, use current focused effort.
+Unfocus is a **shutdown sequence** for the current effort session:
+1. Resolves the effort name (from argument or current focus via `focus-get`)
+2. Invokes `/daily:log` to record session progress
+3. Clears the focus in the cache
+4. Prints a message suggesting the user close the tab
+
+There is no programmatic way to close a Windows Terminal tab, so the user must close it manually.
 
 ### Activate (Promote)
 
@@ -77,7 +91,9 @@ Clears the current focus. If user doesn't specify name, use current focused effo
 python efforts.py promote <name>
 ```
 
-Moves effort from backlog to active and sets focus.
+Moves effort from backlog to active and sets focus. Prints the effort directory path.
+
+**Post-promote**: Spawns a new Claude Code tab in the effort directory via `/windows:spawn-session`.
 
 **Fuzzy names**: Confirm exact effort name before running.
 
