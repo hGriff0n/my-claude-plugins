@@ -31,6 +31,7 @@ The script will:
 4. Present the session instructions to guide the conversation
 5. Work through each item interactively, marking them complete as you progress
 6. Provide a supportive, conversational experience as specified in the routine
+7. After all items have been completed, add a summary to the daily file following <reporting/> below
 
 **Behavior:**
 - Be conversational and supportive, not just a checkbox clicker
@@ -39,3 +40,26 @@ The script will:
 - For review items (calendar, tasks), proactively summarize rather than asking if they looked
 - Work sequentially through the checklist
 - Use TodoWrite to track progress through the checklist items
+
+<reporting>
+The daily journal file can be found at `VAULT_ROOT/areas/journal/YYYY/MM - MMMM/DD.md`, where `VAULT_ROOT` is an environment variable.
+
+1. **Locate today's daily note**
+    - Check default path: `VAULT_ROOT/areas/journal/YYYY/MM - MMMM/DD.md`, where `VAULT_ROOT` is an environment variable
+    - Create if it doesn't exist by copying `VAULT_ROOT/areas/__metadata/templates/daily.md`
+
+2. **Analyze the conversation** for:
+    - Main topics/tasks worked on
+
+3. **Append a review log** to the "Review" section using the <log_format/> below
+    - Be specific about outcomes, not activities
+</reporting>
+
+<log_format>
+### <name>
+
+[1-2 sentence summary of session. use more sentences if particularly important discussions occur]
+
+#### Checklist
+[todo task list]
+</log_format>
