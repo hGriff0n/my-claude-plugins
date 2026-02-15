@@ -1,0 +1,36 @@
+#!/bin/sh
+#
+# Pre-commit hook: auto-increment patch version for any plugin
+# whose files are staged in this commit.
+
+# Collect staged files (added, copied, modified, renamed)
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACMR)
+
+# Find unique plugin names with staged changes
+CHANGED_PLUGINS=""
+for file in $STAGED_FILES; do
+    case "$file" in
+        plugins/*/.claude-plugin/plugin.json) continue ;;  # skip version file so manual bumps aren't overwritten
+        plugins/*/*)
+            plugin_name="${file#plugins/}"
+            plugin_name="${plugin_name%%/*}"
+            case " $CHANGED_PLUGINS " in
+                *" $plugin_name "*) ;;  # already tracked
+                *) CHANGED_PLUGINS="$CHANGED_PLUGINS $plugin_name" ;;
+            esac
+            ;;
+    esac
+done
+
+# Bump patch version for each changed plugin
+for plugin in $CHANGED_PLUGINS; do
+    PLUGIN_JSON="plugins/$plugin/.claude-plugin/plugin.json"
+    if [ -f "$PLUGIN_JSON" ]; then
+        OLD_VERSION=$(jq -r '.version' "$PLUGIN_JSON")
+        NEW_VERSION=$(echo "$OLD_VERSION" | awk -F. '{ printf "%d.%d.%d", $1, $2, $3+1 }')
+        jq --arg v "$NEW_VERSION" '.version = $v' "$PLUGIN_JSON" > "$PLUGIN_JSON.tmp" \
+            && mv "$PLUGIN_JSON.tmp" "$PLUGIN_JSON"
+        git add "$PLUGIN_JSON"
+        echo "Auto-bumped $plugin: $OLD_VERSION -> $NEW_VERSION"
+    fi
+done
