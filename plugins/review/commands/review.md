@@ -53,6 +53,8 @@ The daily journal file can be found at `VAULT_ROOT/areas/journal/YYYY/MM - MMMM/
 
 3. **Append a review log** to the "Review" section using the <log_format/> below
     - Be specific about outcomes, not activities
+
+4. **Mark habit completed** by appending the current date (in ISO format (`YYYY-MM-DD`)) as a list item on a new line after the `entries:` field in the yaml frontmatter. 
 </reporting>
 
 <log_format>
