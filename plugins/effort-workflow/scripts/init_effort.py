@@ -29,7 +29,10 @@ def new_effort(args: argparse.Namespace):
     # Make sure that the folder has all of the required files and other metadsetup    
     dashboard_file = effort_dir / 'README.md'
     if not dashboard_file.exists():
-        shutil.copy(Path('~/clawd/skills/effort-workflow/assets/readme.template.md').expanduser(), dashboard_file)
+        shutil.copy(Path('../assets/readme.template.md').expanduser(), dashboard_file)
+    effort_claude = effort_dir / 'CLAUDE.md'
+    if not effort_claude.exists():
+        shutil.copy(Path('../assets/CLAUDE.template.md').expanduser(), effort_claude)
     
     # Update the internal state tracking
     set_status(args.name, 'active')

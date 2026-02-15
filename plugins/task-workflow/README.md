@@ -6,7 +6,7 @@
 
 ## 🎯 What This Skill Does
 
-This skill implements the task workflow system defined in `~/clawd/efforts/workflow/docs/tasks-doc.md`. It provides:
+This skill implements the task workflow system defined in `VAULT_ROOT/efforts/workflow/docs/tasks-doc.md`. It provides:
 
 - **Recursive task trees** - Organize work from high-level releases down to atomic tasks
 - **Rich metadata** - Track IDs, due dates, estimates, blocking relationships, and more
@@ -20,7 +20,7 @@ This skill implements the task workflow system defined in `~/clawd/efforts/workf
 
 This skill is located at:
 ```
-~/clawd/skills/task-workflow/
+CLAUDE_PLUGIN_DIR/skills/task-workflow/
 ```
 
 No additional dependencies required (uses standard Python 3).
@@ -184,7 +184,7 @@ print(len(tree.tasks[0].children))  # → 2
 
 **Key functions:**
 - `resolve_tasks_file(cwd, force_global)` - Find nearest TASKS.md
-- `get_global_tasks_file()` - Get ~/clawd/TASKS.md
+- `get_global_tasks_file()` - Get VAULT_ROOT/TASKS.md
 - `find_all_tasks_files()` - Find all TASKS.md in workspace
 - `rebuild_cache()` - Rebuild task index cache
 - `check_id_collision(task_id)` - Check if ID already exists
@@ -198,9 +198,9 @@ from context import resolve_tasks_file
 from pathlib import Path
 
 # From efforts/workflow directory
-effort_dir = Path.home() / "clawd" / "efforts" / "workflow"
+effort_dir = VAULT_ROOT / "efforts" / "workflow"
 tasks_file = resolve_tasks_file(effort_dir)
-# → ~/clawd/efforts/workflow/01 TASKS.md
+# → VAULT_ROOT/efforts/workflow/01 TASKS.md
 ```
 
 ---
@@ -211,7 +211,6 @@ Phase 1 includes comprehensive unit tests:
 
 ```bash
 # Run all tests (requires pytest)
-cd ~/clawd/skills/task-workflow
 python3 -m pytest tests/ -v
 
 # Manual testing without pytest
@@ -240,7 +239,7 @@ python3 tests/test_utils.py
 - Tags WITHOUT emoji → use hashtag (`#estimate:4h`)
 
 ### 2. JSON Cache (Not SQLite)
-**Decision:** Use single JSON file at `~/.clawdbot/tooling/tasks/cache.json` for task index.
+**Decision:** Use single JSON file at `~/.cache/tooling/tasks/cache.json` for task index.
 - Simple, portable, no external dependencies
 - Fast enough for expected task counts (<10k)
 - Can optimize to SQLite later if needed
@@ -276,9 +275,9 @@ python3 tests/test_utils.py
 
 ## 📖 References
 
-- **Spec:** `~/clawd/efforts/workflow/docs/tasks-doc.md`
-- **Tags:** `~/clawd/efforts/workflow/docs/tags.md`
-- **Implementation Plan:** `~/clawd/efforts/workflow/task-workflow-skill-plan.md`
+- **Spec:** `VAULT_ROOT/efforts/workflow/docs/tasks-doc.md`
+- **Tags:** `VAULT_ROOT/efforts/workflow/docs/tags.md`
+- **Implementation Plan:** `VAULT_ROOT/efforts/workflow/task-workflow-skill-plan.md`
 
 ---
 

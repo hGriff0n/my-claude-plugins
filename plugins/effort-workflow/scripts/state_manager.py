@@ -2,9 +2,10 @@
 
 import json
 from pathlib import Path
+from utils import get_effort_dir
 
 STATE_FILE = Path.home() / ".cache" / "efforts" / "efforts.json"
-VAULT_DIR = Path.home() / "clawd" / "efforts"
+VAULT_DIR = get_effort_dir()
 
 # TODO: me - This needs to be improved to handle more schemas
 def new_state():
