@@ -75,9 +75,9 @@ Tasks are markdown checklist items with emoji/hashtag tags:
 **Hierarchy:**
 
 ```markdown
-- [ ] Parent task 🆔 parent1 #stub
-    - [ ] Subtask 1 🆔 child1
-    - [ ] Subtask 2 🆔 child2
+- [ ] Parent task 🆔 parent1
+    - [ ] Subtask 1 🆔 child1 #stub
+    - [ ] Subtask 2 🆔 child2 #stub
 ```
 
 Adding a child removes `#stub` from parent automatically.
@@ -183,5 +183,3 @@ Tasks added to Open section by default. Marking a task with `--status done` adds
 
 **References:**
 - Full CLI options: [CLI-REFERENCE.md](CLI-REFERENCE.md)
-- Task schema spec: [tasks-doc.md](tasks-doc.md)
-- Tag specification: [tags.md](efforts/workflow/docs/tags.md)
