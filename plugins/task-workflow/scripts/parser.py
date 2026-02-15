@@ -51,7 +51,7 @@ def split_tags(text: str) -> Tuple[str, Dict[str, str]]:
     # Build combined pattern: (#tag:|emoji )<value> OR #tag
     emoji_pattern = '|'.join(re.escape(emoji) for emoji in EMOJI_TO_TAG.keys())
     # Groups: (1)=hashtag_with_value, (2)=emoji, (3)=value, (4)=hashtag_no_value
-    combined_pattern = rf'(?:#([\w-]+):|({emoji_pattern})\s+)(\S+)|#([\w-]+)'
+    combined_pattern = rf'(?:#([\w/-]+):|({emoji_pattern})\s+)(\S+)|#([\w/-]+)'
 
     # Single pass to extract all tags
     for match in re.finditer(combined_pattern, text):

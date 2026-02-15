@@ -8,7 +8,7 @@ from pathlib import Path
 import tempfile
 
 # Add scripts directory to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "scripts" / "new"))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
 from parser import (
@@ -90,13 +90,14 @@ def test_parse_task_line_with_emoji_tags():
 
 def test_parse_task_line_with_hashtag_tags():
     """Test task line with hashtag tags."""
-    line = "- [ ] Task title #estimate:4h #stub"
+    line = "- [ ] Task title #estimate:4h #stub #s/important"
     result = parse_task_line(line)
 
     assert result is not None
     assert result['title'] == "Task title"
     assert result['tags']['estimate'] == '4h'
     assert result['tags']['stub'] == ''
+    assert result['tags']['s/important'] == ''
 
 
 def test_parse_task_line_mixed_tags():
