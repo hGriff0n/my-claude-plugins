@@ -21,6 +21,10 @@
       "source": "./plugins/windows"
     },
     {
+      "name": "allmystuff",
+      "source": "./plugins/allmystuff"
+    },
+    {
       "name": "daily",
       "source": {
         "source": "url",
