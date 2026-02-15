@@ -6,12 +6,12 @@ allowed-tools: Bash, Read
 
 Move an effort to backlog using the effort-workflow CLI.
 
-**Script:** `${CLAUDE_PLUGIN_ROOT}/skills/effort-workflow/scripts/efforts.py`
+**Script:** `${CLAUDE_PLUGIN_ROOT}/scripts/efforts.py`
 
 Run:
 
 ```
-python "${CLAUDE_PLUGIN_ROOT}/skills/effort-workflow/scripts/efforts.py" relegate $ARGUMENTS
+python "${CLAUDE_PLUGIN_ROOT}/scripts/efforts.py" relegate $ARGUMENTS
 ```
 
 If the user provides a partial or fuzzy name, confirm the exact effort name before running.

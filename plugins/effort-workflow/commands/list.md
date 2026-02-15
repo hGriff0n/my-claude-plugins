@@ -6,12 +6,12 @@ allowed-tools: Bash, Read
 
 List efforts using the effort-workflow CLI.
 
-**Script:** `${CLAUDE_PLUGIN_ROOT}/skills/effort-workflow/scripts/efforts.py`
+**Script:** `${CLAUDE_PLUGIN_ROOT}/scripts/efforts.py`
 
 Run:
 
 ```
-python "${CLAUDE_PLUGIN_ROOT}/skills/effort-workflow/scripts/efforts.py" list $ARGUMENTS
+python "${CLAUDE_PLUGIN_ROOT}/scripts/efforts.py" list $ARGUMENTS
 ```
 
 **Available options:**

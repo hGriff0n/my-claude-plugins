@@ -16,12 +16,12 @@ Valid routines are markdown files in `areas/__metadata/routines/` with the `n/re
 
 Example: `/review morning`, `/review evening`, `/review weekly`
 
-**Script:** `${CLAUDE_PLUGIN_ROOT}/skills/review-workflow/scripts/review.py`
+**Script:** `${CLAUDE_PLUGIN_ROOT}/scripts/review.py`
 
 Run:
 
 ```bash
-python "${CLAUDE_PLUGIN_ROOT}/skills/review-workflow/scripts/review.py" $ARGUMENTS
+python "${CLAUDE_PLUGIN_ROOT}/scripts/review.py" $ARGUMENTS
 ```
 
 The script will:

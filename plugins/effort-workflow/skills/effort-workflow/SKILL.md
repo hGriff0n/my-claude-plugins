@@ -24,7 +24,7 @@ State is tracked in `~/.cache/efforts/efforts.json` with schema:
 
 ## Core Script
 
-All commands use: `${CLAUDE_PLUGIN_ROOT}/skills/effort-workflow/scripts/efforts.py`
+All commands use: `${CLAUDE_PLUGIN_ROOT}/scripts/efforts.py`
 
 ## Commands
 

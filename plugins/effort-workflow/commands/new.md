@@ -6,12 +6,12 @@ allowed-tools: Bash, Read
 
 Create a new effort using the effort-workflow CLI.
 
-**Script:** `${CLAUDE_PLUGIN_ROOT}/skills/effort-workflow/scripts/efforts.py`
+**Script:** `${CLAUDE_PLUGIN_ROOT}/scripts/efforts.py`
 
 Run:
 
 ```
-python "${CLAUDE_PLUGIN_ROOT}/skills/effort-workflow/scripts/efforts.py" new $ARGUMENTS
+python "${CLAUDE_PLUGIN_ROOT}/scripts/efforts.py" new $ARGUMENTS
 ```
 
 If the effort name contains spaces, quote it. After success, invoke `/task-workflow:init <path>` where `<path>` is the newly created effort directory.
