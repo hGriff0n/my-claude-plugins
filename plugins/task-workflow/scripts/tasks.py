@@ -23,6 +23,7 @@ Examples:
 """
 
 import argparse
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -42,6 +43,17 @@ TASKS_TEMPLATE = TEMPLATE_DIR / "tasks.template.md"
 
 # --- helpers ---
 
+def _cwd_is_in_efforts(cwd: Path, vault: Path) -> bool:
+    """Check if cwd is within the vault's efforts/ directory."""
+    if vault is None:
+        return False
+    try:
+        cwd.resolve().relative_to((vault / "efforts").resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def resolve_current_effort() -> Path | None:
     """
     Resolve the current effort focus, if set, to use as a starting point
@@ -55,6 +67,8 @@ def resolve_tasks_file(cwd: Path = None, vault: Path = None) -> Path | None:
     Find the nearest TASKS.md by walking up from cwd.
 
     Stops at the vault root if provided, otherwise walks to filesystem root.
+    If cwd is already inside an effort directory, trusts cwd directly.
+    Only consults the effort cache if cwd is NOT inside an effort directory.
 
     Args:
         cwd: Starting directory (default: current directory)
@@ -64,9 +78,13 @@ def resolve_tasks_file(cwd: Path = None, vault: Path = None) -> Path | None:
         Path to TASKS.md, or None if not found
     """
     current = (cwd or Path.cwd()).resolve()
-    effort = resolve_current_effort()
-    if effort is not None:
-        current = vault / "efforts" / effort
+
+    # Only consult the effort cache if cwd is NOT already inside efforts/
+    if not _cwd_is_in_efforts(current, vault):
+        effort = resolve_current_effort()
+        if effort is not None:
+            current = vault / "efforts" / effort
+
     while True:
         for name in TASKS_FILE_NAMES:
             candidate = current / name

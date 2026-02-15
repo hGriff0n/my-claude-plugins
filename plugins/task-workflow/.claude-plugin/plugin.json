@@ -1,5 +1,5 @@
 {
   "name": "task-workflow",
   "description": "Personal task management in markdown TASKS.md files with hierarchical tasks, metadata tags, and context-aware file resolution.",
-  "version": "1.0.0"
+  "version": "1.0.1"
 }
