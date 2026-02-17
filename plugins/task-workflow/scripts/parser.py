@@ -93,14 +93,11 @@ def calculate_indent_level(indent_str: str) -> int:
     if not indent_str:
         return 0
 
-    # Count tabs (each tab = 1 level)
-    tab_count = indent_str.count('\t')
-
     # Count spaces (4 spaces = 1 level)
-    space_count = len(indent_str.replace('\t', ''))
+    space_count = len(indent_str.replace('\t', '    '))
     space_levels = space_count // 4
 
-    return tab_count + space_levels
+    return space_levels
 
 
 def parse_checkbox_state(checkbox: str) -> Literal["open", "in-progress", "done"]:
@@ -336,12 +333,11 @@ def parse_content(content: str, file_path: Optional[Path] = None) -> Tuple[List[
         elif current_task and stripped.startswith('-'):
             # This is a note line (indented bullet without checkbox)
             # Only add if indented more than current task
-            indent_str = line[:len(line) - len(line.lstrip())]
+            indent_str = line[:line.find('-')]
             indent_level = calculate_indent_level(indent_str)
 
             if indent_level > current_task.indent_level:
-                note_text = stripped.lstrip('-').strip()
-                current_task.notes.append(note_text)
+                current_task.notes.append(f'{indent_level * '    '}{stripped}')
                 current_task.raw_lines.append(line)
 
 
