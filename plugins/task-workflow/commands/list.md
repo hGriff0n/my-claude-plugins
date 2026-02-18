@@ -27,6 +27,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/tasks.py" list $ARGUMENTS
 | `--atomic` | - | Show only leaf tasks (no children) |
 | `--status` | `open\|in-progress\|done` | Filter by status |
 | `--due` | `today\|this-week\|overdue` | Filter by due date |
+| `--scheduled` | `today\|this-week\|overdue` | Filter by scheduled date |
 | `--blocked` | - | Show only blocked tasks |
 | `--stub` | - | Show only stub tasks needing breakdown |
 | `--section` | `<name>` | Filter by section name |

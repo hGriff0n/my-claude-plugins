@@ -40,6 +40,7 @@ tasks.py add "Task title" [options]
 | Option | Argument | Description |
 |--------|----------|-------------|
 | `--due` | `<date>` | Due date (YYYY-MM-DD, today, tomorrow, friday, etc.) |
+| `--scheduled` | `<date>` | Scheduled date (YYYY-MM-DD, today, tomorrow, friday, etc.) |
 | `--estimate` | `<time>` | Time estimate (e.g., 2h, 30m, 1d) |
 | `--blocked-by` | `<uuid>` | UUID of blocking task (creates dependency) |
 | `--parent` | `<uuid>` | Add as subtask under parent (removes parent's #stub) |
@@ -122,6 +123,7 @@ tasks.py list [filters] [display-options]
 | `--atomic` | - | Show only leaf tasks (no children) |
 | `--status` | `open\|in-progress\|done` | Filter by status |
 | `--due` | `today\|this-week\|overdue` | Filter by due date |
+| `--scheduled` | `today\|this-week\|overdue` | Filter by scheduled date |
 | `--blocked` | - | Show only blocked tasks (have ⛔ tag) |
 | `--stub` | - | Show only stub tasks (have #stub tag) |
 | `--section` | `<name>` | Filter by section name |
@@ -258,6 +260,7 @@ tasks.py update <id> [options]
 |--------|----------|-------------|
 | `--status` | `open\|in-progress\|done` | Change status (done adds completion date, unblocks dependents) |
 | `--due` | `<date>` | Update due date |
+| `--scheduled` | `<date>` | Update scheduled date, used for day-to-day task planning |
 | `--estimate` | `<time>` | Update time estimate |
 | `--blocked-by` | `<uuid>` | Add blocker dependency |
 | `--unblock` | `<uuid>` | Remove blocker dependency |

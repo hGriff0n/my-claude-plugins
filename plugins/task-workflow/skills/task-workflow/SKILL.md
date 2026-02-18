@@ -66,10 +66,11 @@ Tasks are markdown checklist items with emoji/hashtag tags:
 **Key tags:**
 - `🆔 <id>` - Unique 6-char ID (auto-generated)
 - `📅 <date>` - Due date (YYYY-MM-DD)
+- `⏳ <date>` - Scheduled date (YYYY-MM-DD)
 - `#estimate:<duration>` - Time estimate (2h, 30m, 1d)
 - `⛔ <id>` - Blocked by task ID
 - `#stub` - Placeholder needing breakdown
-- `➕ <date>` - Created date
+- `➕ <date>` - Created date (auto-generated)
 - `✅ <date>` - Completed date (when status=done)
 
 **Hierarchy:**

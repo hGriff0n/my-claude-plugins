@@ -70,6 +70,7 @@ No additional dependencies required (uses standard Python 3).
 | `#b:<uuid>` | ⛔ | `⛔ abc123` | Blocking task IDs (comma-separated) |
 | `#created:<date>` | ➕ | `➕ 2026-02-10` | Creation date (auto-generated) |
 | `#due:<date>` | 📅 | `📅 2026-03-15` | Due date (ISO 8601) |
+| `#scheduled:<date>` | ⏳ | `⏳ 2026-02-11` | Scheduled date (ISO 8601) |
 | `#completed:<date>` | ✅ | `✅ 2026-02-11` | Completion date (auto-generated) |
 | `#estimate:<duration>` | - | `#estimate:4h` | Estimated time (e.g., 2h, 30m, 1d) |
 | `#actual:<duration>` | - | `#actual:3h30m` | Actual time spent |

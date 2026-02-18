@@ -20,6 +20,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/tasks.py" update $ARGUMENTS
 |--------|----------|-------------|
 | `--status` | `open\|in-progress\|done` | Change status (done adds completion date, unblocks dependents) |
 | `--due` | `<date>` | Update due date |
+| `--scheduled` | `<date>` | Update scheduled date |
 | `--estimate` | `<time>` | Update time estimate |
 | `--blocked-by` | `<id>` | Add blocker dependency |
 | `--unblock` | `<id>` | Remove blocker dependency |

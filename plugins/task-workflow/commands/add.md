@@ -19,6 +19,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/tasks.py" add $ARGUMENTS
 | Option | Argument | Description |
 |--------|----------|-------------|
 | `--due` | `<date>` | Due date (YYYY-MM-DD, today, tomorrow, friday, next monday) |
+| `--scheduled` | `<date>` | Scheduled date (YYYY-MM-DD, today, tomorrow, friday, next monday) |
 | `--estimate` | `<time>` | Time estimate (2h, 30m, 1d) |
 | `--blocked-by` | `<id>` | Task ID this is blocked by |
 | `--parent` | `<id>` | Add as subtask under parent |
