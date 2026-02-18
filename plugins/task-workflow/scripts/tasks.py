@@ -167,6 +167,13 @@ def add_task(args):
             tags['due'] = due
         else:
             print(f"Warning: Could not parse due date '{args.due}', skipping.")
+    
+    if args.scheduled:
+        scheduled = parse_date(args.scheduled)
+        if scheduled:
+            tags['scheduled'] = scheduled
+        else:
+            print(f"Warning: Could not parse scheduled date '{args.scheduled}', skipping.")
 
     if args.estimate:
         est = parse_duration(args.estimate)
@@ -214,11 +221,27 @@ def add_task(args):
     print(f"  File: {target_file}")
     if 'due' in tags:
         print(f"  Due: {tags['due']}")
+    if 'scheduled' in tags:
+        print(f"  Scheduled: {tags['scheduled']}")
     if args.parent:
         print(f"  Parent: {args.parent}")
 
 
 # --- list ---
+
+def _filter_time(filter_string, today, date_str) -> bool:
+    if not filteR_string:
+        return True
+    if not date_str:
+        return False
+    date = datetime.fromisoformat(scheduled_str).date()
+    if filter_string == 'today' and date > today:
+        return False
+    elif filter_string == 'this-week' and not (0 <= (date - today).days <= 7):
+        return False
+    elif filter_string == 'overdue' and date >= today:
+        return False
+    return True
 
 def _filter_task(t, args, today, tag_name, tag_value, section_lower):
     """Return True if task passes all active filters."""
@@ -236,20 +259,13 @@ def _filter_task(t, args, today, tag_name, tag_value, section_lower):
                 return False
         elif tag_name not in t.tags:
             return False
-    if args.due:
-        due_str = t.tags.get('due')
-        if not due_str:
+    try:
+        if not _filter_time(args.due, today, t.tags.get('due')):
             return False
-        try:
-            due_date = datetime.fromisoformat(due_str).date()
-        except ValueError:
+        if not _filter_time(args.scheduled, today, t.tags.get('scheduled', None))
             return False
-        if args.due == 'today' and due_date > today:
-            return False
-        elif args.due == 'this-week' and not (0 <= (due_date - today).days <= 7):
-            return False
-        elif args.due == 'overdue' and due_date >= today:
-            return False
+    except ValueError:
+        return False
     return True
 
 
@@ -371,6 +387,14 @@ def update_task(args):
             updated = True
         else:
             print(f"Warning: Could not parse due date '{args.due}', skipping.")
+
+    if args.scheduled:
+        scheduled = parse_date(args.scheduled)
+        if scheduled:
+            tags['scheduled'] = scheduled
+            updated = True
+        else:
+            print(f"Warning: Could not parse scheduled date '{args.scheduled}', skipping.")
 
     if args.estimate:
         est = parse_duration(args.estimate)
@@ -515,6 +539,7 @@ def main():
     add_p.add_argument('title', help='Task title')
     add_p.add_argument('--file', help='Path to TASKS.md')
     add_p.add_argument('--due', help='Due date (YYYY-MM-DD, today, tomorrow, friday, etc.)')
+    add_p.add_argument('--scheduled', help='Scheduled date (YYYY-MM-DD, today, tomorrow, friday, etc.)')
     add_p.add_argument('--estimate', help='Time estimate (e.g., 2h, 30m, 1d)')
     add_p.add_argument('--blocked-by', help='ID of blocking task')
     add_p.add_argument('--parent', help='ID of parent task (add as subtask)')
@@ -533,6 +558,8 @@ def main():
                         help='Filter by status')
     list_p.add_argument('--due', choices=['today', 'this-week', 'overdue'],
                         help='Filter by due date')
+    # TODO: might be worth giving better options here
+    list_p.add_argument('--scheduled', choices=['today', 'this-week'], help='Set scheduled date')
     list_p.add_argument('--blocked', action='store_true', help='Show only blocked tasks')
     list_p.add_argument('--stub', action='store_true', help='Show only stub tasks')
     list_p.add_argument('--section', help='Filter by section name')
@@ -550,6 +577,7 @@ def main():
     update_p.add_argument('--status', choices=['open', 'in-progress', 'done'],
                           help='Change status')
     update_p.add_argument('--due', help='Set due date')
+    update_p.add_argument('--scheduled', help='Set scheduled date')
     update_p.add_argument('--estimate', help='Set time estimate')
     update_p.add_argument('--blocked-by', help='Add blocking dependency')
     update_p.add_argument('--unblock', help='Remove blocking dependency')

@@ -11,13 +11,14 @@ from pathlib import Path
 from typing import Dict, List, Literal, Optional
 
 
-# Tag to emoji mappings (for formatting)
+# Tag to emoji mappings (Obsidian Tasks plugin compatibility)
 TAG_TO_EMOJI = {
     'id': '🆔',
     'b': '⛔',
     'created': '➕',
     'due': '📅',
     'completed': '✅',
+    'scheduled': '⏳'
 }
 
 

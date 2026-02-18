@@ -19,17 +19,9 @@ import re
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Tuple
 
-from models import Task, TaskTree, format_task, format_checkbox_state
+from models import Task, TaskTree, format_task, format_checkbox_state, TAG_TO_EMOJI
 
-
-# Emoji to tag mappings (Obsidian Tasks plugin compatibility)
-EMOJI_TO_TAG = {
-    '🆔': 'id',
-    '⛔': 'b',
-    '➕': 'created',
-    '📅': 'due',
-    '✅': 'completed',
-}
+EMOJI_TO_TAG = {v:k for k, v in TAG_TO_EMOJI.items()}
 
 
 def split_tags(text: str) -> Tuple[str, Dict[str, str]]:
@@ -292,6 +284,7 @@ def parse_content(content: str, file_path: Optional[Path] = None) -> Tuple[List[
         # Try to parse as heading
         heading_data = parse_heading_line(stripped)
         if heading_data:
+            # TODO: We need to maintain the full section data (see french/TASKS.md)
             current_section = heading_data['text']
             return
 
