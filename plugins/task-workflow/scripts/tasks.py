@@ -262,7 +262,7 @@ def _filter_task(t, args, today, tag_name, tag_value, section_lower):
     try:
         if not _filter_time(args.due, today, t.tags.get('due')):
             return False
-        if not _filter_time(args.scheduled, today, t.tags.get('scheduled', None))
+        if not _filter_time(args.scheduled, today, t.tags.get('scheduled', None)):
             return False
     except ValueError:
         return False
