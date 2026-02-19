@@ -230,11 +230,11 @@ def add_task(args):
 # --- list ---
 
 def _filter_time(filter_string, today, date_str) -> bool:
-    if not filteR_string:
+    if not filter_string:
         return True
     if not date_str:
         return False
-    date = datetime.fromisoformat(scheduled_str).date()
+    date = datetime.fromisoformat(date_str).date()
     if filter_string == 'today' and date > today:
         return False
     elif filter_string == 'this-week' and not (0 <= (date - today).days <= 7):
