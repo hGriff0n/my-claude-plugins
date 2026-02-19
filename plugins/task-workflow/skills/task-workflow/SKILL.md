@@ -102,7 +102,7 @@ All commands from `scripts/` directory. Full reference: see [CLI-REFERENCE.md](C
 tasks.py add "title" [--due <date>] [--estimate <time>] [--blocked-by <id>] [--parent <id>] [--section <name>]
 
 # List tasks
-tasks.py list [--all|--atomic] [--status open|in-progress|done] [--due today|this-week|overdue] [--blocked] [--stub] [--tag <name>]
+tasks.py list [--all|--atomic] [--status open|in-progress|done] [--scheduled today|this-week|overdue] [--due today|this-week|overdue] [--blocked] [--stub] [--tag <name>]
 tasks.py list blockers <id>
 
 # Update task
