@@ -1,7 +1,7 @@
 ---
 description: Run a structured review routine with interactive checklist.
 argument-hint: "<routine-name>"
-allowed-tools: Bash, Read, TodoWrite
+allowed-tools: Bash, Read, TodoWrite, Write, Edit, AskUserQuestion, Skill
 ---
 
 Run a structured review routine from `areas/__metadata/routines/`.
@@ -16,22 +16,12 @@ Valid routines are markdown files in `areas/__metadata/routines/` with the `n/re
 
 Example: `/review morning`, `/review evening`, `/review weekly`
 
-**Script:** `${CLAUDE_PLUGIN_ROOT}/scripts/review.py`
-
-Run:
-
-```bash
-python "${CLAUDE_PLUGIN_ROOT}/scripts/review.py" $ARGUMENTS
-```
-
-The script will:
-1. Load the specified routine file from `areas/__metadata/routines/`
-2. Extract session instructions and checklist items
-3. Create a TodoWrite task list for the checklist
-4. Present the session instructions to guide the conversation
-5. Work through each item interactively, marking them complete as you progress
-6. Provide a supportive, conversational experience as specified in the routine
-7. After all items have been completed, add a summary to the daily file following <reporting/> below
+**Steps:**
+1. Read `VAULT_ROOT/areas/__metadata/routines/$ARGUMENTS.md`, where `VAULT_ROOT` is an environment variable
+2. Follow `## Session Instructions` as context
+3. Use TodoWrite to build the task list from checklist items, skipping nested items
+4. Work through each item conversationally, following nested-item behavior in <nesting/>
+5. On completion, follow <reporting/> below
 
 **Behavior:**
 - Be conversational and supportive, not just a checkbox clicker
@@ -41,11 +31,22 @@ The script will:
 - Work sequentially through the checklist
 - Use TodoWrite to track progress through the checklist items
 
+<nesting>
+**Nested task items** (indented `- [ ]` children under a parent task) are the sequential steps required to complete that parent. Handle them as follows:
+
+1. When you reach a parent task that has nested `- [ ]` sub-items, do **not** ask about the parent directly — instead, expand its sub-items into the todo list (via `TodoWrite`) so they appear as individual tracked steps alongside the top-level items
+2. Walk through each sub-item one at a time, marking it `in_progress` then `completed` in the todo list as the user confirms it
+3. Mark each sub-item `[x]` in the file as it's confirmed done
+4. Only mark the parent `[x]` (and complete it in the todo list) once **all** sub-items are marked complete
+
+**Non-task lines** under a checklist item (lines that aren't `- [ ]` items, e.g. plain bullet notes or instructions) are directives for you to act on — not items to ask the user about. Execute them at the appropriate point (e.g. when the parent is being completed).
+</nesting>
+
 <reporting>
-The daily journal file can be found at `VAULT_ROOT/areas/journal/YYYY/MM - MMMM/DD.md`, where `VAULT_ROOT` is an environment variable.
+The daily journal file can be found at `VAULT_ROOT/areas/journal/YYYY/MM - MMMM/DD.md`
 
 1. **Locate today's daily note**
-    - Check default path: `VAULT_ROOT/areas/journal/YYYY/MM - MMMM/DD.md`, where `VAULT_ROOT` is an environment variable
+    - Check default path: `VAULT_ROOT/areas/journal/YYYY/MM - MMMM/DD.md`
     - Create if it doesn't exist by copying `VAULT_ROOT/areas/__metadata/templates/daily.md`
 
 2. **Analyze the conversation** for:
