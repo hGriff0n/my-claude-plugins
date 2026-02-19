@@ -68,7 +68,6 @@ def resolve_tasks_file(cwd: Path = None, vault: Path = None) -> Path | None:
 
     Stops at the vault root if provided, otherwise walks to filesystem root.
     If cwd is already inside an effort directory, trusts cwd directly.
-    Only consults the effort cache if cwd is NOT inside an effort directory.
 
     Args:
         cwd: Starting directory (default: current directory)
@@ -77,13 +76,9 @@ def resolve_tasks_file(cwd: Path = None, vault: Path = None) -> Path | None:
     Returns:
         Path to TASKS.md, or None if not found
     """
-    current = (cwd or Path.cwd()).resolve()
-
-    # Only consult the effort cache if cwd is NOT already inside efforts/
-    if not _cwd_is_in_efforts(current, vault):
-        effort = resolve_current_effort()
-        if effort is not None:
-            current = vault / "efforts" / effort
+    current = cwd is not None and cwd.resolve() or cwd
+    if not current or not _cwd_is_in_efforts(current, vault):
+        current = vault
 
     while True:
         for name in TASKS_FILE_NAMES:
@@ -245,7 +240,8 @@ def _filter_time(filter_string, today, date_str) -> bool:
 
 def _filter_task(t, args, today, tag_name, tag_value, section_lower):
     """Return True if task passes all active filters."""
-    if args.status and t.status != args.status:
+    status = args.status or 'open,in-progress'
+    if t.status not in status:
         return False
     if args.blocked and not t.is_blocked:
         return False
@@ -269,6 +265,7 @@ def _filter_task(t, args, today, tag_name, tag_value, section_lower):
     return True
 
 
+# TODO: Needs to search for branch tasks, not just parents or leafs
 def _list_tree(tree, args, today, tag_name, tag_value, section_lower):
     """Filter and print tasks from a single tree."""
     candidates = tree.tasks if not args.atomic else [t for t in tree.all_tasks() if t.is_leaf]
@@ -298,7 +295,7 @@ def list_tasks(args):
         trees = [cache.get_tree(target_file)]
 
     # Pre-compute filter parameters
-    today = datetime.now().date() if args.due else None
+    today = datetime.now().date()
     if args.tag and ':' in args.tag:
         tag_name, tag_value = args.tag.split(':', 1)
     else:
