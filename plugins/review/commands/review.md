@@ -4,10 +4,10 @@ argument-hint: "<routine-name>"
 allowed-tools: Bash, Read, TodoWrite, Write, Edit, AskUserQuestion, Skill
 ---
 
-Run a structured review routine from `areas/__metadata/routines/`.
+Run a structured review routine from `areas/personal/routines/`.
 
 **Routine Discovery:**
-Valid routines are markdown files in `areas/__metadata/routines/` with the `n/review` tag in their frontmatter.
+Valid routines are markdown files in `areas/personal/routines/` with the `n/review` tag in their frontmatter.
 
 **Usage:**
 ```
@@ -17,7 +17,7 @@ Valid routines are markdown files in `areas/__metadata/routines/` with the `n/re
 Example: `/review morning`, `/review evening`, `/review weekly`
 
 **Steps:**
-1. Read `VAULT_ROOT/areas/__metadata/routines/$ARGUMENTS.md`, where `VAULT_ROOT` is an environment variable
+1. Read `VAULT_ROOT/areas/personal/routines/$ARGUMENTS.md`, where `VAULT_ROOT` is an environment variable
 2. Follow `## Session Instructions` as context
 3. Use TodoWrite to build the task list from checklist items, skipping nested items
 4. Work through each item conversationally, following nested-item behavior in <nesting/>
@@ -55,7 +55,7 @@ The daily journal file can be found at `VAULT_ROOT/areas/journal/YYYY/MM - MMMM/
 3. **Append a review log** to the "Review" section using the <log_format/> below
     - Be specific about outcomes, not activities
 
-4. **Mark habit completed** by appending the current date (in ISO format `YYYY-MM-DD`) as a list item on a new line after the `entries:` field in the yaml frontmatter of `VAULT_ROOT/areas/__metadata/routines/habits/reviews`
+4. **Mark habit completed** by appending the current date (in ISO format `YYYY-MM-DD`) as a list item on a new line after the `entries:` field in the yaml frontmatter of `VAULT_ROOT/areas/personal/routines/habits/reviews`
 </reporting>
 
 <log_format>
