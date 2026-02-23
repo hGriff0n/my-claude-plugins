@@ -62,6 +62,20 @@ def set_status(name, status):
     
     save_state(state)
 
+def _is_effort_dir(path) -> bool:
+    return path.is_dir() and (path / 'CLAUDE.md').exists()
+
+def _scan_backlog(path) -> List[str]:
+    backlog = []
+    for f in path.iterdir():
+        if not f.isdir():
+            continue
+        if _is_effort_dir(path):
+            backlog.append(path.name)
+        elif f.isdir():
+            backlog.extend(_scan_backlog(f))
+    return backlog
+
 def scan_pkm(args=None):
     state = new_state()
     for file in EFFORT_BASE_DIR.iterdir():
@@ -69,8 +83,8 @@ def scan_pkm(args=None):
             continue
 
         if file.name == '__backlog':
-            state['backlog'].extend(f.name for f in file.iterdir())
-        elif file.is_dir() and (file / 'README.md').exists():
+            state['backlog'].extend(_scan_backlog(file))
+        elif _is_effort_dir(file):
             state['active'].append(file.name)
         else:
             state['backlog'].append(file.name)
