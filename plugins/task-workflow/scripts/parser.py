@@ -269,11 +269,12 @@ def parse_content(content: str, file_path: Optional[Path] = None) -> Tuple[List[
     task_stack: List[Task] = []  # Stack to track parent tasks by indent level
     current_task: Optional[Task] = None
     current_section: Optional[str] = None  # Track current section heading
+    current_section_level: int = 0  # Heading level (0 = no heading seen yet)
 
     # Because we have to use a 'do-while' loop, we need to extract the loop
     # contents here because the call to next would otherwise be skipped
     def _parse_line(line_num, line):
-        nonlocal current_task, current_section
+        nonlocal current_task, current_section, current_section_level
 
         stripped = line.strip()
 
@@ -284,8 +285,8 @@ def parse_content(content: str, file_path: Optional[Path] = None) -> Tuple[List[
         # Try to parse as heading
         heading_data = parse_heading_line(stripped)
         if heading_data:
-            # TODO: We need to maintain the full section data (see french/TASKS.md)
             current_section = heading_data['text']
+            current_section_level = heading_data['level']
             return
 
         # Try to parse as task line (optimize by checking prefix first)
@@ -304,6 +305,7 @@ def parse_content(content: str, file_path: Optional[Path] = None) -> Tuple[List[
                 line_number=line_num,
                 raw_lines=[line],
                 section=current_section,
+                section_level=current_section_level,
             )
 
             # Determine parent based on indentation
@@ -359,14 +361,16 @@ def write_file(file_path: Path, frontmatter_lines: List[str], tree: TaskTree) ->
     """
     lines = list(frontmatter_lines)
     current_section = None
+    current_section_level = 0
     for task in tree.tasks:
-        # If we're changing sections, then add the section heading
-        # This automatically handles the initial heading because we start as None
-        if task.section != current_section:
+        # Detect section change by both text and level (handles same-name headings at different levels)
+        if task.section != current_section or task.section_level != current_section_level:
             current_section = task.section
-            lines.append('')
-            lines.append(f'### {current_section}')
-            lines.append('')
+            current_section_level = task.section_level
+            if current_section is not None:
+                lines.append('')
+                lines.append(f'{"#" * current_section_level} {current_section}')
+                lines.append('')
 
         # Task.__str__ auto-handles the recursion so we just need to do one top-level
         lines.append(str(task))

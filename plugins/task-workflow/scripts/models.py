@@ -67,6 +67,7 @@ class Task:
     indent_level: int = 0
     line_number: int = 0
     section: Optional[str] = None  # Track which section this task belongs to
+    section_level: int = 0  # Heading level of the section (0 = no heading, 3 = ###, 4 = ####, etc.)
 
     @property
     def is_leaf(self) -> bool:
