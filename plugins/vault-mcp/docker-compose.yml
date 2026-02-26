@@ -1,0 +1,10 @@
+services:
+  vault-mcp:
+    build: .
+    volumes:
+      - ${VAULT_ROOT}:/vault:rw
+    environment:
+      - VAULT_ROOT=/vault
+      - EXCLUDE_DIRS=${EXCLUDE_DIRS:-.git,.obsidian,node_modules,.trash}
+    stdin_open: true
+    tty: false
