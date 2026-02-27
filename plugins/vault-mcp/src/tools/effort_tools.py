@@ -1,5 +1,8 @@
 """
-MCP tool handlers for effort operations.
+Effort tool handlers.
+
+Core logic lives in handle_* functions (return dicts).
+MCP wrappers in register_effort_tools() serialize to JSON strings.
 """
 
 import json
@@ -25,6 +28,85 @@ def _effort_to_dict(effort, task_count: Optional[int] = None) -> dict:
     return d
 
 
+# ---------------------------------------------------------------------------
+# Handler functions (return dicts, shared by MCP tools and REST API)
+# ---------------------------------------------------------------------------
+
+
+def handle_effort_list(
+    cache,
+    *,
+    status: Optional[str] = None,
+    include_task_counts: bool = False,
+) -> list[dict]:
+    efforts = cache.list_efforts(status=status)
+    results = []
+    for effort in efforts:
+        count = None
+        if include_task_counts and effort.tasks_file:
+            tasks = cache.query_tasks(effort=effort.name, status="open,in-progress")
+            count = len(tasks)
+        results.append(_effort_to_dict(effort, task_count=count))
+    return results
+
+
+def handle_effort_get(cache, *, name: str) -> dict:
+    effort = cache.get_effort(name)
+    if not effort:
+        return {"error": f"Effort '{name}' not found"}
+
+    result = _effort_to_dict(effort)
+    if effort.tasks_file:
+        for st in ("open", "in-progress", "done"):
+            tasks = cache.query_tasks(effort=name, status=st)
+            result[f"tasks_{st.replace('-', '_')}"] = len(tasks)
+    return result
+
+
+def handle_effort_focus(cache, *, name: str) -> dict:
+    cache.set_focus(name)
+    effort = cache.get_effort(name)
+    return {"focused": name, "path": str(effort.path) if effort else None}
+
+
+def handle_effort_unfocus(cache) -> dict:
+    cache.set_focus(None)
+    return {"focused": None}
+
+
+def handle_effort_get_focus(cache) -> dict:
+    focus_name = cache.get_focus()
+    if not focus_name:
+        return {"focused": None}
+
+    effort = cache.get_effort(focus_name)
+    if not effort:
+        return {"focused": None, "note": "Focused effort no longer found in vault"}
+
+    result = _effort_to_dict(effort)
+    tasks = cache.query_tasks(effort=focus_name, status="open,in-progress")
+    result["open_tasks"] = [
+        {"id": t.id, "title": t.title, "status": t.status, "section": t.section}
+        for t in tasks
+    ]
+    return result
+
+
+def handle_effort_scan(cache) -> dict:
+    cache.refresh_efforts()
+    efforts = cache.list_efforts()
+    return {
+        "scanned": True,
+        "active": [e.name for e in efforts if e.status == EffortStatus.ACTIVE],
+        "backlog": [e.name for e in efforts if e.status == EffortStatus.BACKLOG],
+    }
+
+
+# ---------------------------------------------------------------------------
+# MCP tool registration (thin wrappers)
+# ---------------------------------------------------------------------------
+
+
 def register_effort_tools(mcp: FastMCP, cache) -> None:
     """Register all effort-related MCP tools onto the FastMCP instance."""
 
@@ -43,15 +125,10 @@ def register_effort_tools(mcp: FastMCP, cache) -> None:
         Returns:
             JSON array of effort objects
         """
-        efforts = cache.list_efforts(status=status)
-        results = []
-        for effort in efforts:
-            count = None
-            if include_task_counts and effort.tasks_file:
-                tasks = cache.query_tasks(effort=effort.name, status="open,in-progress")
-                count = len(tasks)
-            results.append(_effort_to_dict(effort, task_count=count))
-        return json.dumps(results, indent=2)
+        return json.dumps(
+            handle_effort_list(cache, status=status, include_task_counts=include_task_counts),
+            indent=2,
+        )
 
     @mcp.tool()
     def effort_get(name: str) -> str:
@@ -64,19 +141,7 @@ def register_effort_tools(mcp: FastMCP, cache) -> None:
         Returns:
             JSON object with effort details and task counts by status
         """
-        effort = cache.get_effort(name)
-        if not effort:
-            return json.dumps({"error": f"Effort '{name}' not found"})
-
-        result = _effort_to_dict(effort)
-
-        # Add task summary per status
-        if effort.tasks_file:
-            for st in ("open", "in-progress", "done"):
-                tasks = cache.query_tasks(effort=name, status=st)
-                result[f"tasks_{st.replace('-', '_')}"] = len(tasks)
-
-        return json.dumps(result, indent=2)
+        return json.dumps(handle_effort_get(cache, name=name), indent=2)
 
     @mcp.tool()
     def effort_focus(name: str) -> str:
@@ -93,12 +158,7 @@ def register_effort_tools(mcp: FastMCP, cache) -> None:
             Confirmation JSON
         """
         try:
-            cache.set_focus(name)
-            effort = cache.get_effort(name)
-            return json.dumps(
-                {"focused": name, "path": str(effort.path) if effort else None},
-                indent=2,
-            )
+            return json.dumps(handle_effort_focus(cache, name=name), indent=2)
         except ValueError as e:
             return json.dumps({"error": str(e)})
 
@@ -110,8 +170,7 @@ def register_effort_tools(mcp: FastMCP, cache) -> None:
         Returns:
             Confirmation JSON
         """
-        cache.set_focus(None)
-        return json.dumps({"focused": None})
+        return json.dumps(handle_effort_unfocus(cache))
 
     @mcp.tool()
     def effort_get_focus() -> str:
@@ -121,21 +180,7 @@ def register_effort_tools(mcp: FastMCP, cache) -> None:
         Returns:
             JSON with the focused effort details, or null if none focused
         """
-        focus_name = cache.get_focus()
-        if not focus_name:
-            return json.dumps({"focused": None})
-
-        effort = cache.get_effort(focus_name)
-        if not effort:
-            return json.dumps({"focused": None, "note": "Focused effort no longer found in vault"})
-
-        result = _effort_to_dict(effort)
-        tasks = cache.query_tasks(effort=focus_name, status="open,in-progress")
-        result["open_tasks"] = [
-            {"id": t.id, "title": t.title, "status": t.status, "section": t.section}
-            for t in tasks
-        ]
-        return json.dumps(result, indent=2)
+        return json.dumps(handle_effort_get_focus(cache), indent=2)
 
     @mcp.tool()
     def effort_scan() -> str:
@@ -147,13 +192,4 @@ def register_effort_tools(mcp: FastMCP, cache) -> None:
         Returns:
             JSON summary of discovered efforts
         """
-        cache.refresh_efforts()
-        efforts = cache.list_efforts()
-        return json.dumps(
-            {
-                "scanned": True,
-                "active": [e.name for e in efforts if e.status == EffortStatus.ACTIVE],
-                "backlog": [e.name for e in efforts if e.status == EffortStatus.BACKLOG],
-            },
-            indent=2,
-        )
+        return json.dumps(handle_effort_scan(cache), indent=2)

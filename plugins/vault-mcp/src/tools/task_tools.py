@@ -1,8 +1,8 @@
 """
-MCP tool handlers for task operations.
+Task tool handlers.
 
-Each function is registered as an MCP tool via register_task_tools().
-Tools return plain text (JSON or formatted markdown) as strings.
+Core logic lives in handle_* functions (return dicts).
+MCP wrappers in register_task_tools() serialize to JSON strings.
 """
 
 import json
@@ -33,6 +33,177 @@ def _task_to_dict(task, include_children: bool = True) -> dict:
     if include_children and task.children:
         d["children"] = [_task_to_dict(c, include_children=True) for c in task.children]
     return d
+
+
+# ---------------------------------------------------------------------------
+# Handler functions (return dicts, shared by MCP tools and REST API)
+# ---------------------------------------------------------------------------
+
+
+def handle_task_list(
+    cache,
+    *,
+    status: str = "open,in-progress",
+    effort: Optional[str] = None,
+    due_before: Optional[str] = None,
+    scheduled_before: Optional[str] = None,
+    scheduled_on: Optional[str] = None,
+    stub: Optional[bool] = None,
+    blocked: Optional[bool] = None,
+    atomic: Optional[bool] = None,
+    file_path: Optional[str] = None,
+    parent_id: Optional[str] = None,
+    include_subtasks: bool = False,
+    limit: int = 200,
+) -> list[dict]:
+    fp = Path(file_path) if file_path else None
+    tasks = cache.query_tasks(
+        status=status,
+        effort=effort,
+        due_before=due_before,
+        scheduled_before=scheduled_before,
+        scheduled_on=scheduled_on,
+        stub=stub,
+        blocked=blocked,
+        atomic=atomic,
+        file_path=fp,
+        parent_id=parent_id,
+        include_subtasks=include_subtasks,
+        limit=limit,
+    )
+    return [_task_to_dict(t) for t in tasks]
+
+
+def handle_task_get(cache, *, task_id: str) -> dict:
+    entry = cache.get_task(task_id)
+    if not entry:
+        return {"error": f"Task '{task_id}' not found"}
+    task, file_path = entry
+    result = _task_to_dict(task, include_children=True)
+    result["file_path"] = str(file_path)
+    return result
+
+
+def handle_task_add(
+    cache,
+    *,
+    title: str,
+    file_path: str,
+    section: Optional[str] = None,
+    status: str = "open",
+    due: Optional[str] = None,
+    scheduled: Optional[str] = None,
+    estimate: Optional[str] = None,
+    blocked_by: Optional[str] = None,
+    parent_id: Optional[str] = None,
+    atomic: bool = False,
+) -> dict:
+    from utils.dates import parse_date, parse_duration
+
+    tags = {}
+    if due:
+        parsed = parse_date(due)
+        if parsed:
+            tags["due"] = parsed
+    if scheduled:
+        parsed = parse_date(scheduled)
+        if parsed:
+            tags["scheduled"] = parsed
+    if estimate:
+        normalized = parse_duration(estimate)
+        if normalized:
+            tags["estimate"] = normalized
+    if blocked_by:
+        tags["b"] = blocked_by.replace(" ", "")
+
+    task = cache.add_task(
+        Path(file_path),
+        title,
+        section=section,
+        status=status,
+        tags=tags,
+        parent_id=parent_id,
+        atomic=atomic,
+    )
+    result = _task_to_dict(task)
+    result["file_path"] = file_path
+    return result
+
+
+def handle_task_update(
+    cache,
+    *,
+    task_id: str,
+    title: Optional[str] = None,
+    status: Optional[str] = None,
+    due: Optional[str] = None,
+    scheduled: Optional[str] = None,
+    estimate: Optional[str] = None,
+    blocked_by: Optional[str] = None,
+    unblock: Optional[str] = None,
+) -> dict:
+    from utils.dates import parse_date, parse_duration
+
+    changes = {}
+    if title is not None:
+        changes["title"] = title
+    if status is not None:
+        changes["status"] = status
+    if due is not None:
+        changes["due"] = parse_date(due) if due else ""
+    if scheduled is not None:
+        changes["scheduled"] = parse_date(scheduled) if scheduled else ""
+    if estimate is not None:
+        changes["estimate"] = parse_duration(estimate) if estimate else ""
+    if blocked_by:
+        changes["blocked_by"] = [b.strip() for b in blocked_by.split(",") if b.strip()]
+    if unblock:
+        changes["unblock"] = [b.strip() for b in unblock.split(",") if b.strip()]
+
+    task = cache.update_task(task_id, **changes)
+    if not task:
+        return {"error": f"Task '{task_id}' not found"}
+    return _task_to_dict(task)
+
+
+def handle_task_blockers(cache, *, task_id: str) -> dict:
+    entry = cache.get_task(task_id)
+    if not entry:
+        return {"error": f"Task '{task_id}' not found"}
+
+    task, _ = entry
+    all_ids = cache.get_all_task_ids()
+
+    blocked_by = []
+    for bid in task.blocking_ids:
+        blocker_entry = cache.get_task(bid)
+        if blocker_entry:
+            t, _ = blocker_entry
+            blocked_by.append({"id": t.id, "title": t.title, "status": t.status})
+
+    blocks = []
+    for tid in all_ids:
+        other_entry = cache.get_task(tid)
+        if other_entry:
+            other, _ = other_entry
+            if task_id in other.blocking_ids:
+                blocks.append({"id": other.id, "title": other.title, "status": other.status})
+
+    return {
+        "task_id": task_id,
+        "title": task.title,
+        "blocked_by": blocked_by,
+        "blocks": blocks,
+    }
+
+
+def handle_cache_status(cache) -> dict:
+    return cache.status()
+
+
+# ---------------------------------------------------------------------------
+# MCP tool registration (thin wrappers)
+# ---------------------------------------------------------------------------
 
 
 def register_task_tools(mcp: FastMCP, cache) -> None:
@@ -81,22 +252,24 @@ def register_task_tools(mcp: FastMCP, cache) -> None:
         Returns:
             JSON array of task objects
         """
-        fp = Path(file_path) if file_path else None
-        tasks = cache.query_tasks(
-            status=status,
-            effort=effort,
-            due_before=due_before,
-            scheduled_before=scheduled_before,
-            scheduled_on=scheduled_on,
-            stub=stub,
-            blocked=blocked,
-            atomic=atomic,
-            file_path=fp,
-            parent_id=parent_id,
-            include_subtasks=include_subtasks,
-            limit=limit,
+        return json.dumps(
+            handle_task_list(
+                cache,
+                status=status,
+                effort=effort,
+                due_before=due_before,
+                scheduled_before=scheduled_before,
+                scheduled_on=scheduled_on,
+                stub=stub,
+                blocked=blocked,
+                atomic=atomic,
+                file_path=file_path,
+                parent_id=parent_id,
+                include_subtasks=include_subtasks,
+                limit=limit,
+            ),
+            indent=2,
         )
-        return json.dumps([_task_to_dict(t) for t in tasks], indent=2)
 
     @mcp.tool()
     def task_get(task_id: str) -> str:
@@ -109,13 +282,7 @@ def register_task_tools(mcp: FastMCP, cache) -> None:
         Returns:
             JSON task object with nested children, or error message
         """
-        entry = cache.get_task(task_id)
-        if not entry:
-            return json.dumps({"error": f"Task '{task_id}' not found"})
-        task, file_path = entry
-        result = _task_to_dict(task, include_children=True)
-        result["file_path"] = str(file_path)
-        return json.dumps(result, indent=2)
+        return json.dumps(handle_task_get(cache, task_id=task_id), indent=2)
 
     @mcp.tool()
     def task_add(
@@ -152,38 +319,23 @@ def register_task_tools(mcp: FastMCP, cache) -> None:
         Returns:
             JSON object with the new task
         """
-        from utils.dates import parse_date, parse_duration
-
-        tags = {}
-        if due:
-            parsed = parse_date(due)
-            if parsed:
-                tags["due"] = parsed
-        if scheduled:
-            parsed = parse_date(scheduled)
-            if parsed:
-                tags["scheduled"] = parsed
-        if estimate:
-            from utils.dates import parse_duration
-            normalized = parse_duration(estimate)
-            if normalized:
-                tags["estimate"] = normalized
-        if blocked_by:
-            tags["b"] = blocked_by.replace(" ", "")
-
         try:
-            task = cache.add_task(
-                Path(file_path),
-                title,
-                section=section,
-                status=status,
-                tags=tags,
-                parent_id=parent_id,
-                atomic=atomic,
+            return json.dumps(
+                handle_task_add(
+                    cache,
+                    title=title,
+                    file_path=file_path,
+                    section=section,
+                    status=status,
+                    due=due,
+                    scheduled=scheduled,
+                    estimate=estimate,
+                    blocked_by=blocked_by,
+                    parent_id=parent_id,
+                    atomic=atomic,
+                ),
+                indent=2,
             )
-            result = _task_to_dict(task)
-            result["file_path"] = file_path
-            return json.dumps(result, indent=2)
         except Exception as e:
             return json.dumps({"error": str(e)})
 
@@ -217,29 +369,21 @@ def register_task_tools(mcp: FastMCP, cache) -> None:
         Returns:
             Updated task JSON or error message
         """
-        from utils.dates import parse_date, parse_duration
-
-        changes = {}
-        if title is not None:
-            changes["title"] = title
-        if status is not None:
-            changes["status"] = status
-        if due is not None:
-            changes["due"] = parse_date(due) if due else ""
-        if scheduled is not None:
-            changes["scheduled"] = parse_date(scheduled) if scheduled else ""
-        if estimate is not None:
-            changes["estimate"] = parse_duration(estimate) if estimate else ""
-        if blocked_by:
-            changes["blocked_by"] = [b.strip() for b in blocked_by.split(",") if b.strip()]
-        if unblock:
-            changes["unblock"] = [b.strip() for b in unblock.split(",") if b.strip()]
-
         try:
-            task = cache.update_task(task_id, **changes)
-            if not task:
-                return json.dumps({"error": f"Task '{task_id}' not found"})
-            return json.dumps(_task_to_dict(task), indent=2)
+            return json.dumps(
+                handle_task_update(
+                    cache,
+                    task_id=task_id,
+                    title=title,
+                    status=status,
+                    due=due,
+                    scheduled=scheduled,
+                    estimate=estimate,
+                    blocked_by=blocked_by,
+                    unblock=unblock,
+                ),
+                indent=2,
+            )
         except Exception as e:
             return json.dumps({"error": str(e)})
 
@@ -257,39 +401,7 @@ def register_task_tools(mcp: FastMCP, cache) -> None:
         Returns:
             JSON with "blocked_by" and "blocks" lists
         """
-        entry = cache.get_task(task_id)
-        if not entry:
-            return json.dumps({"error": f"Task '{task_id}' not found"})
-
-        task, _ = entry
-        all_ids = cache.get_all_task_ids()
-
-        # What blocks this task
-        blocked_by = []
-        for bid in task.blocking_ids:
-            blocker_entry = cache.get_task(bid)
-            if blocker_entry:
-                t, _ = blocker_entry
-                blocked_by.append({"id": t.id, "title": t.title, "status": t.status})
-
-        # What this task blocks
-        blocks = []
-        for tid in all_ids:
-            other_entry = cache.get_task(tid)
-            if other_entry:
-                other, _ = other_entry
-                if task_id in other.blocking_ids:
-                    blocks.append({"id": other.id, "title": other.title, "status": other.status})
-
-        return json.dumps(
-            {
-                "task_id": task_id,
-                "title": task.title,
-                "blocked_by": blocked_by,
-                "blocks": blocks,
-            },
-            indent=2,
-        )
+        return json.dumps(handle_task_blockers(cache, task_id=task_id), indent=2)
 
     @mcp.tool()
     def cache_status() -> str:
@@ -299,4 +411,4 @@ def register_task_tools(mcp: FastMCP, cache) -> None:
         Returns:
             JSON with file count, task count, effort count, last scan time, etc.
         """
-        return json.dumps(cache.status(), indent=2)
+        return json.dumps(handle_cache_status(cache), indent=2)

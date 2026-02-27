@@ -7,12 +7,14 @@ Startup sequence:
 3. Start cache background worker thread
 4. Start VaultWatcher daemon thread
 5. Register all MCP tools
-6. Run MCP server (stdio transport)
+6. Start REST API server in background thread (if API_ENABLED)
+7. Run MCP server (stdio transport)
 """
 
 import logging
 import os
 import sys
+import threading
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -32,6 +34,17 @@ log = logging.getLogger(__name__)
 def _parse_exclude_dirs(raw: str) -> set[str]:
     """Parse a comma-separated list of directory names to exclude."""
     return {part.strip() for part in raw.split(",") if part.strip()}
+
+
+def _start_api_server(cache, port: int) -> None:
+    """Run the FastAPI/uvicorn server in a daemon thread."""
+    import uvicorn
+
+    from api.app import create_app
+
+    app = create_app(cache)
+    log.info("Starting REST API on port %d", port)
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
 
 
 def main() -> None:
@@ -63,6 +76,15 @@ def main() -> None:
     # Start file system watcher
     watcher = VaultWatcher(cache, vault_root, exclude_dirs)
     watcher.start()
+
+    # Start REST API in a daemon thread
+    api_enabled = os.environ.get("API_ENABLED", "true").lower() in ("true", "1", "yes")
+    if api_enabled:
+        api_port = int(os.environ.get("API_PORT", "9400"))
+        api_thread = threading.Thread(
+            target=_start_api_server, args=(cache, api_port), daemon=True
+        )
+        api_thread.start()
 
     # Create MCP server and register tools
     mcp = FastMCP("vault-mcp")
