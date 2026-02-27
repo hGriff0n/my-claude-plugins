@@ -1,25 +1,29 @@
 ---
 description: Create a new effort, mark it active, and focus it.
 argument-hint: "<name>"
-allowed-tools: Bash, Read
+allowed-tools: Bash, Read, Write, mcp__vault-mcp__effort_scan, mcp__vault-mcp__effort_focus, Skill
 ---
 
-Create a new effort using the effort-workflow CLI, initialize task tracking, then spawn a new Claude Code session in the effort directory.
-
-**Script:** `${CLAUDE_PLUGIN_ROOT}/scripts/efforts.py`
+Create a new effort directory, initialize it, then spawn a new Claude Code session.
 
 ## Steps
 
-1. If the effort name contains spaces, quote it.
+1. Determine the effort directory path: `$VAULT_ROOT/efforts/<name>`
 
-2. Run the new effort command and capture the printed effort directory path:
+2. Create the directory and initialize files:
 
+```bash
+mkdir -p "$VAULT_ROOT/efforts/<name>"
 ```
-python "${CLAUDE_PLUGIN_ROOT}/scripts/efforts.py" new $ARGUMENTS
-```
 
-The last line of stdout is the effort directory path.
+3. Read the CLAUDE.md template from `${CLAUDE_PLUGIN_ROOT}/assets/CLAUDE.template.md` and write it to `$VAULT_ROOT/efforts/<name>/CLAUDE.md`.
 
-3. Invoke `/task-workflow:init <path>` where `<path>` is the captured effort directory path.
+4. Read the README template from `${CLAUDE_PLUGIN_ROOT}/assets/readme.template.md` and write it to `$VAULT_ROOT/efforts/<name>/README.md`.
 
-4. Invoke `/windows:spawn-session` with the effort directory path to open a new tab.
+5. Call the `effort_scan` MCP tool to discover the new effort.
+
+6. Call the `effort_focus` MCP tool with `name=<name>` to set focus.
+
+7. Invoke `/task-workflow:init <effort directory path>` to create the TASKS.md file.
+
+8. Invoke `/windows:spawn-session` with the effort directory path to open a new tab.

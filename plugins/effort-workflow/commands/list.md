@@ -1,29 +1,23 @@
 ---
 description: List active or backlog efforts.
-argument-hint: "[--all] [--backlog] [--tasks]"
-allowed-tools: Bash, Read
+argument-hint: "[--all|-a] [--backlog|-b] [--tasks|-t]"
+allowed-tools: mcp__vault-mcp__effort_list
 ---
 
-List efforts using the effort-workflow CLI.
+List efforts using the `effort_list` MCP tool.
 
-**Script:** `${CLAUDE_PLUGIN_ROOT}/scripts/efforts.py`
+## Parameter mapping
 
-Run:
+| User flag | MCP parameter |
+|-----------|--------------|
+| (default, no flags) | `status="active"` |
+| `--all` / `-a` | Omit `status` (returns all) |
+| `--backlog` / `-b` | `status="backlog"` |
+| `--tasks` / `-t` | `include_task_counts=true` |
 
-```
-python "${CLAUDE_PLUGIN_ROOT}/scripts/efforts.py" list $ARGUMENTS
-```
+If the user provides natural language, parse their intent:
+- "show backlog projects" → `status="backlog"`
+- "show what I'm currently working on" → `status="active"`
+- "show all efforts" → omit `status`
 
-**Available options:**
-
-| Option | Argument | Description |
-|--------|----------|-------------|
-| `--all` / `-a` | - | Show active and backlog |
-| `--backlog` / `-b` | - | Show backlog only |
-| `--tasks` / `-t` | - | Show tasks (placeholder) |
-
-If no arguments are provided, list active efforts only.
-
-If the user provides natural language instead of CLI flags, parse their intent and construct the appropriate command. For example:
-- "show backlog projects: `list --backlog`
-- "show what I'm currently working on: `list`
+Format the results as a readable list, indicating which effort is currently focused (the `is_focused` field). If task counts are included, show them next to each effort.

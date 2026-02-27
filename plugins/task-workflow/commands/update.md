@@ -1,36 +1,31 @@
 ---
 description: Update an existing task's metadata (status, due date, estimate, blockers, title)
 argument-hint: "<task-id> [--status <status>] [--due <date>] [--estimate <time>]"
-allowed-tools: Bash, Read
+allowed-tools: mcp__vault-mcp__task_update
 ---
 
-Update a task using the task-workflow CLI.
+Update a task using the `task_update` MCP tool.
 
-**Script:** `${CLAUDE_PLUGIN_ROOT}/scripts/tasks.py`
+## MCP tool parameters
 
-Run:
+The first argument is always the task ID. Call `task_update` with:
 
-```
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/tasks.py" update $ARGUMENTS
-```
+| Parameter | Source |
+|-----------|--------|
+| `task_id` | First argument (required) |
+| `title` | From `--title` if provided |
+| `status` | From `--status` if provided: "open", "in-progress", or "done" |
+| `due` | From `--due` if provided (natural language OK). Pass "" to clear. |
+| `scheduled` | From `--scheduled` if provided. Pass "" to clear. |
+| `estimate` | From `--estimate` if provided. Pass "" to clear. |
+| `blocked_by` | From `--blocked-by` if provided (comma-separated IDs to ADD as blockers) |
+| `unblock` | From `--unblock` if provided (comma-separated IDs to REMOVE as blockers) |
 
-**First argument must be the task ID.** Then any combination of options:
-
-| Option | Argument | Description |
-|--------|----------|-------------|
-| `--status` | `open\|in-progress\|done` | Change status (done adds completion date, unblocks dependents) |
-| `--due` | `<date>` | Update due date |
-| `--scheduled` | `<date>` | Update scheduled date |
-| `--estimate` | `<time>` | Update time estimate |
-| `--blocked-by` | `<id>` | Add blocker dependency |
-| `--unblock` | `<id>` | Remove blocker dependency |
-| `--notes` | `<text>` | Update notes (empty string to clear) |
-| `--title` | `<text>` | Change task title |
-| `--atomic` | - | Remove #stub tag |
+Only pass parameters that the user explicitly provides. Omitted parameters are left unchanged.
 
 If the user provides natural language, parse their intent:
-- "Mark abc123 as done" becomes: `update abc123 --status done`
-- "Change due date of abc123 to friday" becomes: `update abc123 --due friday`
-- "abc123 is blocked by xyz789" becomes: `update abc123 --blocked-by xyz789`
+- "Mark abc123 as done" → task_id="abc123", status="done"
+- "Change due date of abc123 to friday" → task_id="abc123", due="friday"
+- "abc123 is blocked by xyz789" → task_id="abc123", blocked_by="xyz789"
 
-Report the update confirmation. When completing a task, report any newly unblocked tasks.
+Report the update confirmation. When completing a task (status="done"), note that the server automatically adds a completion date and unblocks dependent tasks.

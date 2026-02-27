@@ -1,21 +1,13 @@
 ---
 description: Get the currently focused effort.
-allowed-tools: Bash
+allowed-tools: mcp__vault-mcp__effort_get_focus
 ---
 
-Query the current focused effort using the effort-workflow CLI.
+Query the current focused effort using the `effort_get_focus` MCP tool.
 
-**Script:** `${CLAUDE_PLUGIN_ROOT}/scripts/efforts.py`
+Call `effort_get_focus` (no parameters). The response includes:
 
-Run:
+- `focused` — name of the focused effort, or null if none
+- `open_tasks` — list of open/in-progress tasks in the focused effort (if one is focused)
 
-```
-python "${CLAUDE_PLUGIN_ROOT}/scripts/efforts.py" focus-get
-```
-
-This command returns the name of the currently focused effort, or empty/null if no effort is focused.
-
-**Use cases:**
-- Determine current context before running other commands
-- Integration with other skills that need to know the active effort
-- Programmatic access to focus state
+Report the focused effort name, path, and open task summary. If no effort is focused, report that.

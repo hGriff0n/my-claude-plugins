@@ -1,28 +1,27 @@
 ---
 description: Create a new TASKS.md file from template in the specified directory
 argument-hint: "<path> [--force]"
-allowed-tools: Bash, Read
+allowed-tools: Read, Write
 ---
 
-Create a new TASKS.md file using the task-workflow CLI.
+Create a new TASKS.md file from the template.
 
-**Script:** `${CLAUDE_PLUGIN_ROOT}/scripts/tasks.py`
+## Steps
 
-Run:
+1. Determine the target path:
+   - If the user provides a directory path, the target is `<path>/TASKS.md`.
+   - If the user provides a file path ending in `.md`, use it directly.
 
-```
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/tasks.py" file create --path $ARGUMENTS
-```
+2. If the target file already exists and `--force` is not set, report the error and stop.
 
-**Available options:**
+3. Read the template from `${CLAUDE_PLUGIN_ROOT}/assets/templates/tasks.template.md`.
 
-| Option | Argument | Description |
-|--------|----------|-------------|
-| `--path` | `<path>` | Target path (file or directory) — **required** |
-| `--force` | - | Overwrite existing file |
+4. Replace `{{DATE_CREATED}}` with today's date in ISO format (YYYY-MM-DD).
 
-If the user just provides a directory path without `--path`, prepend it automatically:
-- `/task-workflow:init ~/projects/myapp` becomes: `file create --path ~/projects/myapp`
-- `/task-workflow:init . --force` becomes: `file create --path . --force`
+5. Write the result to the target path. Create parent directories if needed.
 
-Report the created file path on success.
+6. Report the created file path on success.
+
+**Examples:**
+- `/task-workflow:init ~/projects/myapp` → creates `~/projects/myapp/TASKS.md`
+- `/task-workflow:init . --force` → overwrites `./TASKS.md`

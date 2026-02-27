@@ -1,44 +1,47 @@
 ---
 description: List and filter tasks, or show blockers for a specific task
 argument-hint: "[blockers <id>] [--status <status>] [--due <range>] [--atomic] [--all]"
-allowed-tools: Bash, Read
+allowed-tools: mcp__vault-mcp__task_list, mcp__vault-mcp__task_blockers, mcp__vault-mcp__effort_get_focus
 ---
 
-List tasks or show blockers using the task-workflow CLI.
+List tasks or show blockers using MCP tools.
 
-**Script:** `${CLAUDE_PLUGIN_ROOT}/scripts/tasks.py`
+## Subcommands
 
-Run:
+### `list blockers <id>`
 
-```
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/tasks.py" list $ARGUMENTS
-```
+Call the `task_blockers` MCP tool with `task_id=<id>`. Report upstream (what blocks it) and downstream (what it blocks) relationships.
 
-**Subcommands:**
+### `list` (default)
 
-- `list` — List tasks with filters
-- `list blockers <id>` — Show what blocks a specific task
+Call the `task_list` MCP tool with filters mapped from arguments.
 
-**Available filters:**
+## Scoping
 
-| Filter | Argument | Description |
-|--------|----------|-------------|
-| `--all` | - | Show all tasks from entire vault |
-| `--atomic` | - | Show only leaf tasks (no children) |
-| `--status` | `open\|in-progress\|done` | Filter by status |
-| `--due` | `today\|this-week\|overdue` | Filter by due date |
-| `--scheduled` | `today\|this-week\|overdue` | Filter by scheduled date |
-| `--blocked` | - | Show only blocked tasks |
-| `--stub` | - | Show only stub tasks needing breakdown |
-| `--section` | `<name>` | Filter by section name |
-| `--tag` | `<name>\|<name:value>` | Filter by tag |
-| `--file` | `<path>` | List from specific TASKS.md file |
+- If `--all` is provided, omit the `effort` parameter (searches entire vault).
+- If `--file <path>` is provided, use `file_path=<path>`.
+- Otherwise, call `effort_get_focus` to get the current effort name and pass it as the `effort` parameter to scope results to the focused effort. If no effort is focused, omit the `effort` parameter (vault-wide).
+
+## Filter mapping
+
+| User flag | MCP parameter | Notes |
+|-----------|--------------|-------|
+| `--status open\|in-progress\|done` | `status` | Default: "open,in-progress" |
+| `--atomic` | `atomic=true` | Only leaf tasks |
+| `--stub` | `stub=true` | Only stub tasks |
+| `--blocked` | `blocked=true` | Only blocked tasks |
+| `--due today` | `due_before=<today's date>` | ISO format YYYY-MM-DD |
+| `--due this-week` | `due_before=<end of week date>` | Calculate the upcoming Sunday |
+| `--due overdue` | `due_before=<yesterday's date>` | Tasks past due |
+| `--scheduled today` | `scheduled_on=<today's date>` | Exact match |
+| `--scheduled this-week` | `scheduled_before=<end of week date>` | On or before end of week |
+| `--file <path>` | `file_path` | Specific file |
 
 **Common combinations:**
 
-- Actionable tasks: `--atomic --status open --due this-week`
-- Blocked tasks: `--blocked`
-- In-progress work: `--status in-progress`
-- Planning queue: `--stub`
+- Actionable tasks: `atomic=true, status="open", due_before=<end of week>`
+- Blocked tasks: `blocked=true`
+- In-progress work: `status="in-progress"`
+- Planning queue: `stub=true`
 
-If no arguments are provided, run `list` with no filters (shows root-level tasks from nearest TASKS.md).
+Format results as a readable task list. If no tasks match, report "No tasks found."
