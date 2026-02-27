@@ -1,25 +1,15 @@
 ---
-description: Clear and rebuild the task cache for fast lookups across the vault
-argument-hint: "[--exclude <dirs...>]"
-allowed-tools: Bash
+description: Show vault cache status and diagnostics
+allowed-tools: mcp__vault-mcp__cache_status
 ---
 
-Refresh the task cache using the task-workflow CLI.
+Show the current vault cache status using the `cache_status` MCP tool.
 
-**Script:** `${CLAUDE_PLUGIN_ROOT}/scripts/tasks.py`
+The vault-mcp server automatically watches for file changes and refreshes its cache. Manual cache rebuilds are no longer needed.
 
-Run:
-
-```
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/tasks.py" cache refresh $ARGUMENTS
-```
-
-**Available options:**
-
-| Option | Argument | Description |
-|--------|----------|-------------|
-| `--exclude` | `<dirs...>` | Directories to skip (space-separated) |
-
-If no arguments are provided, refreshes the entire cache with default settings.
-
-Report the number of files loaded and tasks indexed.
+Call the `cache_status` MCP tool (no parameters) and report:
+- Number of files indexed
+- Number of tasks indexed
+- Number of efforts indexed
+- Currently focused effort (if any)
+- Last full scan timestamp

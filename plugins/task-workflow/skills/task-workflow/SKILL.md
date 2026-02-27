@@ -10,49 +10,63 @@ Manage personal tasks in markdown-based TASKS.md files with rich metadata and co
 
 **Create new TASKS.md:**
 
-```bash
-python3 tasks.py file create --path /path/to/directory
-```
+Use `/task-workflow:init <path>` — reads template and writes TASKS.md to the specified directory.
 
 **Add a task:**
 
-```bash
-python3 tasks.py add "Fix parser bug" --due tomorrow --estimate 2h
-```
+Uses the `task_add` MCP tool via the vault-mcp server:
+- Resolves the target TASKS.md from the focused effort context
+- Auto-generates a unique task ID and created date
 
 **List tasks:**
 
-```bash
-python3 tasks.py list --due this-week --atomic
-```
+Uses the `task_list` MCP tool with filters (status, due dates, atomic, blocked, stub).
 
 **Update task:**
 
-```bash
-python3 tasks.py update <task-id> --status in-progress --estimate 4h
-```
+Uses the `task_update` MCP tool. Setting status to "done" auto-adds completion date and unblocks dependents.
 
 **Archive completed tasks:**
 
-```bash
-python3 tasks.py archive --older-than 30
-```
+Uses the local archive script — no MCP equivalent for this operation.
 
 ## Natural Language Usage
 
 When the user expresses task intent in natural language:
 
 1. **Parse intent** - Extract title, due date, estimate, blockers
-2. **Execute CLI** - Run appropriate `tasks.py` command from `scripts/` directory
+2. **Call MCP tool** - Use the appropriate vault-mcp tool (task_add, task_list, task_update, task_blockers)
 3. **Report result** - Show task ID and confirmation
 
 **Examples:**
 
-- "Add task: Implement auth, due Monday, 8h estimate" → `tasks.py add "Implement auth" --due 2026-02-17 --estimate 8h`
-- "Show me tasks due this week" → `tasks.py list --due this-week`
-- "Mark task abc123 as in progress" → `tasks.py update abc123 --status in-progress`
-- "What's blocking task xyz?" → `tasks.py list blockers xyz`
+- "Add task: Implement auth, due Monday, 8h estimate" → `task_add` with title, due, estimate
+- "Show me tasks due this week" → `task_list` with due_before filter
+- "Mark task abc123 as in progress" → `task_update` with status="in-progress"
+- "What's blocking task xyz?" → `task_blockers` with task_id
 - "Archive old completed tasks" → `tasks.py archive --older-than 30`
+
+## MCP Tools (vault-mcp server)
+
+Most task operations use the vault-mcp MCP server which provides:
+
+- **`task_add`** — Create new tasks with metadata
+- **`task_list`** — Filter tasks by status, effort, due dates, flags
+- **`task_get`** — Get full task detail by ID
+- **`task_update`** — Update task metadata (title, status, dates, blockers)
+- **`task_blockers`** — Show blocking relationships (upstream and downstream)
+- **`cache_status`** — Show vault cache diagnostics
+
+The server automatically watches for file changes and refreshes its cache.
+
+## Context Resolution
+
+When adding or listing tasks, the focused effort provides context:
+
+1. Call `effort_get_focus` to get the current effort's `tasks_file` path
+2. Use that path as the `file_path` parameter for task operations
+3. Override with `--file <path>` for explicit file targeting
+4. Use `--all` to search the entire vault
 
 ## Task Format
 
@@ -83,44 +97,22 @@ Tasks are markdown checklist items with emoji/hashtag tags:
 
 Adding a child removes `#stub` from parent automatically.
 
-## Context Resolution
-
-Files are auto-discovered in this order:
-
-1. Search upward from current directory for `TASKS.md` or `01 TASKS.md`
-2. Stop at vault boundary (VAULT_ROOT environment variable)
-3. Override with `--file <path>` or `--all` flag to show all vault tasks
-
 ## Commands
 
-All commands from `scripts/` directory. Full reference: see [CLI-REFERENCE.md](CLI-REFERENCE.md)
+### MCP-based commands
 
-**Essential commands:**
+- **add** — `task_add` MCP tool
+- **list** — `task_list` / `task_blockers` MCP tools
+- **update** — `task_update` MCP tool
+- **reload-cache** — `cache_status` MCP tool (auto-refresh via file watcher)
+- **init** — Reads template and writes TASKS.md directly
 
-```bash
-# Add task
-tasks.py add "title" [--due <date>] [--estimate <time>] [--blocked-by <id>] [--parent <id>] [--section <name>]
+### Script-based commands
 
-# List tasks
-tasks.py list [--all|--atomic] [--status open|in-progress|done] [--scheduled today|this-week|overdue] [--due today|this-week|overdue] [--blocked] [--stub] [--tag <name>]
-tasks.py list blockers <id>
+- **archive** — `python3 tasks.py archive` from `scripts/` directory (complex operation without MCP equivalent)
 
-# Update task
-tasks.py update <id> [--status open|in-progress|done] [--due <date>] [--estimate <time>] [--blocked-by <id>] [--unblock <id>] [--title <text>] [--atomic]
-
-# Archive completed tasks
-tasks.py archive [--older-than <days>] [--dry-run]
-
-# Manage cache
-tasks.py cache init [--exclude <dirs>]
-tasks.py cache refresh [--exclude <dirs>]
-
-# Create new TASKS.md
-tasks.py file create --path <path> [--force]
-```
-
-**Date parsing:**
-- Absolute: `2026-02-15`, `2026-02-15`
+**Date parsing** (handled by MCP server):
+- Absolute: `2026-02-15`
 - Relative: `today`, `tomorrow`, `friday`, `next monday`
 
 **Duration parsing:**
@@ -135,25 +127,25 @@ tasks.py file create --path <path> [--force]
 When user says "expand task <id>":
 1. Read task title
 2. Suggest logical subtasks
-3. Add subtasks as children with `--parent <id>`
+3. Add subtasks as children with `parent_id=<id>`
 4. Parent's `#stub` removed automatically
 
 ### Blocking Management
 
 Manage task dependencies:
 
-- "Add task: Deploy after abc123 is done" → `tasks.py add "Deploy" --blocked-by abc123`
-- "What's blocking xyz?" → `tasks.py list blockers xyz`
-- "Remove blocker from abc123" → `tasks.py update abc123 --unblock <blocker-id>`
+- "Add task: Deploy after abc123 is done" → `task_add` with blocked_by="abc123"
+- "What's blocking xyz?" → `task_blockers` with task_id="xyz"
+- "Remove blocker from abc123" → `task_update` with unblock="<blocker-id>"
 
 ### Smart Filtering
 
-Common filter combinations:
+Common filter combinations via `task_list`:
 
-- Actionable tasks: `--atomic --status open --due this-week` (leaf tasks due soon)
-- Blocked tasks: `--blocked` (waiting on dependencies)
-- In-progress work: `--status in-progress`
-- Planning queue: `--stub` (tasks needing breakdown)
+- Actionable tasks: `atomic=true, status="open", due_before=<end of week>` (leaf tasks due soon)
+- Blocked tasks: `blocked=true` (waiting on dependencies)
+- In-progress work: `status="in-progress"`
+- Planning queue: `stub=true` (tasks needing breakdown)
 
 ## File Structure
 
@@ -162,25 +154,20 @@ TASKS.md structure:
 ---
 frontmatter
 ---
-# Tasks
+### Open
+- [ ] Task 1
+    - [ ] Subtask 1
 
-## Open
-### Interrupts    (urgent, --global tasks)
-### Active        (in progress)
-### Planned       (queued)
-
-## Closed         (completed tasks)
+### Closed
+- [x] Completed task
 ```
 
-Tasks added to Open section by default. Marking a task with `--status done` adds completion date and unblocks dependent tasks.
+Tasks added to Open section by default. Setting status to "done" adds completion date and unblocks dependent tasks.
 
-**Scripts location:** `${CLAUDE_PLUGIN_ROOT}/scripts/`
-- `tasks.py` - Main CLI
-- `cache.py` - Task cache management
-- `archive.py` - Archive old tasks
-- `models.py` - Task data models
+**Local scripts** (for archive only): `${CLAUDE_PLUGIN_ROOT}/scripts/`
+- `tasks.py` - CLI entry point
+- `archive.py` - Archive logic
 - `parser.py` - Task tree parsing
+- `models.py` - Task data models
+- `cache.py` - Local JSON cache
 - `utils.py` - Date/duration parsing
-
-**References:**
-- Full CLI options: [CLI-REFERENCE.md](CLI-REFERENCE.md)

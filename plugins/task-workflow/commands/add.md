@@ -1,35 +1,36 @@
 ---
 description: Add a new task to TASKS.md with optional metadata (due date, estimate, blockers, parent)
 argument-hint: "<title> [--due <date>] [--estimate <time>] [--blocked-by <id>] [--parent <id>]"
-allowed-tools: Bash, Read
+allowed-tools: mcp__vault-mcp__task_add, mcp__vault-mcp__effort_get_focus
 ---
 
-Add a task using the task-workflow CLI.
+Add a task using the `task_add` MCP tool.
 
-**Script:** `${CLAUDE_PLUGIN_ROOT}/scripts/tasks.py`
+## Resolving the target file
 
-Run:
+If the user provides `--file <path>`, use that path directly.
 
-```
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/tasks.py" add $ARGUMENTS
-```
+Otherwise, call the `effort_get_focus` MCP tool. If an effort is focused, use its `tasks_file` field as the `file_path`. If no effort is focused, ask the user which TASKS.md file to add to.
 
-**Available options:**
+## MCP tool parameters
 
-| Option | Argument | Description |
-|--------|----------|-------------|
-| `--due` | `<date>` | Due date (YYYY-MM-DD, today, tomorrow, friday, next monday) |
-| `--scheduled` | `<date>` | Scheduled date (YYYY-MM-DD, today, tomorrow, friday, next monday) |
-| `--estimate` | `<time>` | Time estimate (2h, 30m, 1d) |
-| `--blocked-by` | `<id>` | Task ID this is blocked by |
-| `--parent` | `<id>` | Add as subtask under parent |
-| `--atomic` | - | Mark as atomic (no #stub tag) |
-| `--notes` | `<text>` | Additional notes |
-| `--section` | `<name>` | Target section (e.g., "Active", "Planned") |
-| `--file` | `<path>` | Force specific TASKS.md file path |
+Call `task_add` with:
 
-If the user provides natural language instead of CLI flags, parse their intent and construct the appropriate command. For example:
-- "Fix parser bug, due tomorrow, 2h estimate" becomes: `add "Fix parser bug" --due tomorrow --estimate 2h`
-- "Implement auth after abc123 is done" becomes: `add "Implement auth" --blocked-by abc123`
+| Parameter | Source |
+|-----------|--------|
+| `title` | The task title from user input |
+| `file_path` | Resolved as above |
+| `section` | From `--section` if provided |
+| `status` | From `--status` if provided (default: "open") |
+| `due` | From `--due` if provided (natural language OK: "tomorrow", "friday", "next monday") |
+| `scheduled` | From `--scheduled` if provided |
+| `estimate` | From `--estimate` if provided (e.g., "2h", "30m", "1d") |
+| `blocked_by` | From `--blocked-by` if provided (comma-separated task IDs) |
+| `parent_id` | From `--parent` if provided |
+| `atomic` | True if `--atomic` flag present, otherwise omit |
+
+If the user provides natural language instead of flags, parse their intent:
+- "Fix parser bug, due tomorrow, 2h estimate" → title="Fix parser bug", due="tomorrow", estimate="2h"
+- "Implement auth after abc123 is done" → title="Implement auth", blocked_by="abc123"
 
 Report the task ID and confirmation after adding.

@@ -1,15 +1,12 @@
 ---
 description: Rebuild effort tracking state from the efforts folder.
-argument-hint: ""
-allowed-tools: Bash, Read
+allowed-tools: mcp__vault-mcp__effort_scan
 ---
 
-Rebuild effort state using the effort-workflow CLI.
+Rebuild effort state by calling the `effort_scan` MCP tool (no parameters).
 
-**Script:** `${CLAUDE_PLUGIN_ROOT}/scripts/efforts.py`
+The tool re-scans the `$VAULT_ROOT/efforts/` directory structure and returns:
+- `active` — list of active effort names (top-level dirs with CLAUDE.md)
+- `backlog` — list of backlog effort names (dirs under `__backlog/` with CLAUDE.md)
 
-Run:
-
-```
-python "${CLAUDE_PLUGIN_ROOT}/scripts/efforts.py" scan
-```
+Report the discovered efforts.
