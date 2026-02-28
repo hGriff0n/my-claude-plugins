@@ -186,6 +186,7 @@ def parse_content(content: str, file_path: Optional[Path] = None) -> TaskTree:
                 line_number=line_num,
                 section=current_section.heading if current_section else None,
                 section_level=current_section.level if current_section else 0,
+                file_path=file_path,
             )
 
             # Pop stack to find parent

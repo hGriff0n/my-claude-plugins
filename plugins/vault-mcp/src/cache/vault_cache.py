@@ -6,7 +6,6 @@ Design:
     ID index       — Dict[str, Tuple[Task, Path]]      (O(1) task lookup; Python references)
     SQLite :memory: — tasks table                      (efficient filtered queries)
     Effort store   — Dict[str, Effort]                 (discovered effort dirs)
-    Focus          — Optional[str]                     (in-memory only; resets on restart)
 
 All mutations acquire _lock (threading.RLock).
 The file watcher queues events on _update_queue; a worker thread drains it.
@@ -49,7 +48,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     completed_date TEXT,
     is_stub INTEGER NOT NULL DEFAULT 0,
     has_blockers INTEGER NOT NULL DEFAULT 0,
-    is_atomic INTEGER NOT NULL DEFAULT 1,
     estimate_minutes INTEGER,
     parent_id TEXT
 );
@@ -101,7 +99,6 @@ def _task_to_row(task: Task, file_path: Path, vault_root: Path, parent_id: Optio
         "completed_date": task.tags.get("completed"),
         "is_stub": 1 if task.is_stub else 0,
         "has_blockers": 1 if task.is_blocked else 0,
-        "is_atomic": 1 if task.is_atomic else 0,
         "estimate_minutes": duration_to_minutes(task.tags.get("estimate", "")) or None,
         "parent_id": parent_id,
     }
@@ -127,11 +124,11 @@ def _insert_tasks_recursive(
             INSERT OR REPLACE INTO tasks
             (id, title, status, file_path, effort_name, section, indent_level,
              due_date, scheduled_date, created_date, completed_date,
-             is_stub, has_blockers, is_atomic, estimate_minutes, parent_id)
+             is_stub, has_blockers, estimate_minutes, parent_id)
             VALUES
             (:id, :title, :status, :file_path, :effort_name, :section, :indent_level,
              :due_date, :scheduled_date, :created_date, :completed_date,
-             :is_stub, :has_blockers, :is_atomic, :estimate_minutes, :parent_id)
+             :is_stub, :has_blockers, :estimate_minutes, :parent_id)
             """,
             row,
         )
@@ -156,7 +153,6 @@ class VaultCache:
         self._files: Dict[Path, CachedFile] = {}
         self._tasks_by_id: Dict[str, Tuple[Task, Path]] = {}
         self._efforts: Dict[str, Effort] = {}
-        self._focus: Optional[str] = None
         self._vault_root: Optional[Path] = None
         self._exclude_dirs: Set[str] = set()
         self._db: sqlite3.Connection = sqlite3.connect(":memory:", check_same_thread=False)
@@ -368,11 +364,7 @@ class VaultCache:
             return
         discovered = scan_efforts(self._vault_root / "efforts")
         with self._lock:
-            # Preserve focus if the effort still exists
-            old_focus = self._focus
             self._efforts = discovered
-            if old_focus and old_focus not in discovered:
-                self._focus = None
 
     # ------------------------------------------------------------------
     # Task queries
@@ -388,7 +380,6 @@ class VaultCache:
         scheduled_on: Optional[str] = None,
         stub: Optional[bool] = None,
         blocked: Optional[bool] = None,
-        atomic: Optional[bool] = None,
         file_path: Optional[Path] = None,
         parent_id: Optional[str] = None,
         include_subtasks: bool = False,
@@ -405,7 +396,6 @@ class VaultCache:
             scheduled_on: ISO date string — return tasks scheduled on exactly this date
             stub: If True, only stubs; False, exclude stubs
             blocked: If True, only blocked; False, exclude blocked
-            atomic: If True, only leaf tasks; False, exclude leaves
             file_path: Restrict to a specific file
             parent_id: Only return direct children of this task ID
             include_subtasks: If True, also return sub-tasks of every matched
@@ -448,10 +438,6 @@ class VaultCache:
         if blocked is not None:
             clauses.append("has_blockers = ?")
             params.append(1 if blocked else 0)
-
-        if atomic is not None:
-            clauses.append("is_atomic = ?")
-            params.append(1 if atomic else 0)
 
         if file_path:
             clauses.append("file_path = ?")
@@ -516,10 +502,13 @@ class VaultCache:
         status: str = "open",
         tags: Optional[Dict] = None,
         parent_id: Optional[str] = None,
-        atomic: bool = False,
     ) -> Task:
         """
         Add a new task to a file. Auto-generates a unique ID.
+
+        New tasks are marked #stub by default (indicating they need subtasks).
+        To suppress this, include ``{"stub": None}`` in tags and pop it after
+        calling, or simply remove the stub tag from the returned task if not needed.
 
         Args:
             file_path: Target TASKS.md file
@@ -528,10 +517,9 @@ class VaultCache:
             status: Initial status
             tags: Additional tags dict
             parent_id: ID of parent task (makes this a subtask)
-            atomic: If True, does NOT add #stub tag
 
         Returns:
-            The new Task object
+            The new Task object (re-parsed from disk with correct line numbers)
         """
         from utils.ids import generate_task_id
         from datetime import date
@@ -546,8 +534,7 @@ class VaultCache:
             all_tags = dict(tags or {})
             all_tags["id"] = new_id
             all_tags["created"] = date.today().isoformat()
-            if not atomic:
-                all_tags.setdefault("stub", "")
+            all_tags.setdefault("stub", "")
 
             new_task = Task(
                 title=title,
@@ -594,7 +581,9 @@ class VaultCache:
             write_file(file_path, tree)
             self._load_file(file_path)
 
-            return new_task
+            # Return the re-parsed task so file_path and line_number are correct
+            refreshed = self._tasks_by_id.get(new_id)
+            return refreshed[0] if refreshed else new_task
 
     def update_task(self, task_id: str, **changes) -> Optional[Task]:
         """
@@ -652,29 +641,14 @@ class VaultCache:
 
     def get_effort(self, name: str) -> Optional[Effort]:
         with self._lock:
-            effort = self._efforts.get(name)
-            if effort:
-                effort.is_focused = (self._focus == name)
-            return effort
+            return self._efforts.get(name)
 
     def list_efforts(self, status: Optional[str] = None) -> List[Effort]:
         with self._lock:
             efforts = list(self._efforts.values())
             if status:
                 efforts = [e for e in efforts if e.status.value == status]
-            for e in efforts:
-                e.is_focused = (self._focus == e.name)
             return sorted(efforts, key=lambda e: e.name)
-
-    def get_focus(self) -> Optional[str]:
-        with self._lock:
-            return self._focus
-
-    def set_focus(self, name: Optional[str]) -> None:
-        with self._lock:
-            if name and name not in self._efforts:
-                raise ValueError(f"Effort '{name}' not found")
-            self._focus = name
 
     def set_effort_status(self, name: str, status: EffortStatus) -> None:
         """
@@ -698,7 +672,6 @@ class VaultCache:
                 "files_indexed": len(self._files),
                 "tasks_indexed": len(self._tasks_by_id),
                 "efforts_indexed": len(self._efforts),
-                "focus": self._focus,
                 "last_full_scan": self._last_full_scan.isoformat() if self._last_full_scan else None,
                 "vault_root": str(self._vault_root) if self._vault_root else None,
                 "exclude_dirs": sorted(self._exclude_dirs),

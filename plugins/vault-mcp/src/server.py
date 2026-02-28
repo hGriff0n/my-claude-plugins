@@ -17,10 +17,12 @@ import sys
 import threading
 from pathlib import Path
 
+from fastapi import APIRouter, FastAPI
 from mcp.server.fastmcp import FastMCP
 
+from api.routes import register_routes
+from api.tools import register_tools
 from cache.vault_cache import VaultCache
-from tools import register_effort_tools, register_task_tools
 from watcher.vault_watcher import VaultWatcher
 
 logging.basicConfig(
@@ -39,10 +41,13 @@ def _parse_exclude_dirs(raw: str) -> set[str]:
 def _start_api_server(cache, port: int) -> None:
     """Run the FastAPI/uvicorn server in a daemon thread."""
     import uvicorn
+    
+    app = FastAPI(title="vault-mcp", docs_url="/api/docs", openapi_url="/api/openapi.json")
 
-    from api.app import create_app
+    api = APIRouter(prefix="/api")
+    register_routes(api, cache)
+    app.include_router(api)
 
-    app = create_app(cache)
     log.info("Starting REST API on port %d", port)
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
 
@@ -88,8 +93,7 @@ def main() -> None:
 
     # Create MCP server and register tools
     mcp = FastMCP("vault-mcp")
-    register_task_tools(mcp, cache)
-    register_effort_tools(mcp, cache)
+    register_tools(mcp, cache)
 
     log.info("Starting vault-mcp server")
     try:

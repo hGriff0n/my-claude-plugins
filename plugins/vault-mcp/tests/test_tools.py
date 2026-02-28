@@ -1,5 +1,5 @@
 """
-Tests for tools/task_tools.py and tools/effort_tools.py.
+Tests for api/tools.py.
 
 Uses a real VaultCache backed by a temporary vault on disk.
 Exercises the MCP tool handler functions directly (bypasses transport).
@@ -14,8 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 import pytest
 
 from cache.vault_cache import VaultCache
-from tools.task_tools import register_task_tools
-from tools.effort_tools import register_effort_tools
+from api.tools import register_tools
 
 
 # ---------------------------------------------------------------------------
@@ -75,8 +74,7 @@ def setup(tmp_path):
     cache.initialize(vault, set())
 
     mcp = _FakeMCP()
-    register_task_tools(mcp, cache)
-    register_effort_tools(mcp, cache)
+    register_tools(mcp, cache)
 
     return mcp, cache, vault
 
@@ -242,23 +240,50 @@ class TestEffortGet:
         assert "error" in data
 
 
-class TestEffortFocus:
-    def test_focus_and_get(self, setup):
-        mcp, cache, vault = setup
-        mcp.get("effort_focus")(name="side-project")
+class TestTaskRefs:
+    def test_ref_set_on_indexed_task(self, setup):
+        """Tasks read from cache should have a non-None ref."""
+        _, cache, _ = setup
+        task, _ = cache.get_task("tsk001")
+        assert task.ref is not None
 
-        result = mcp.get("effort_get_focus")()
-        data = json.loads(result)
-        # When focused, effort_get_focus returns _effort_to_dict which has "name"
-        assert data["name"] == "side-project"
-        assert data["is_focused"] is True
+    def test_ref_updated_after_add_subtask(self, setup):
+        """
+        Adding a subtask to a parent inserts a new line between the parent and the
+        next sibling.  After the write+reload, the sibling's ref must reflect its
+        new (shifted) line number.
+        """
+        _, cache, vault = setup
+        tasks_file = vault / "TASKS.md"
 
-    def test_unfocus(self, setup):
-        mcp, cache, vault = setup
-        mcp.get("effort_focus")(name="side-project")
-        mcp.get("effort_unfocus")()
+        tsk002_before, _ = cache.get_task("tsk002")
+        line_before = tsk002_before.line_number
 
-        result = mcp.get("effort_get_focus")()
-        data = json.loads(result)
-        # When unfocused, effort_get_focus returns {"focused": None}
-        assert data["focused"] is None
+        # Adding a child under tsk001 inserts a line before tsk002
+        cache.add_task(tasks_file, "Subtask of groceries", parent_id="tsk001")
+
+        tsk002_after, _ = cache.get_task("tsk002")
+        assert tsk002_after.line_number > line_before, "tsk002 should have shifted down"
+
+        file_lines = tasks_file.read_text(encoding="utf-8").splitlines()
+        assert tsk002_after.title in file_lines[tsk002_after.line_number]
+
+    def test_ref_updated_after_add_to_earlier_section(self, setup):
+        """
+        Appending a task to an earlier section shifts tasks in later sections.
+        After the write+reload, refs for the later tasks must be correct.
+        """
+        _, cache, vault = setup
+        tasks_file = vault / "TASKS.md"
+
+        tsk003_before, _ = cache.get_task("tsk003")
+        line_before = tsk003_before.line_number
+
+        # Append to Open (before Done section where tsk003 lives)
+        cache.add_task(tasks_file, "New open task", section="Open")
+
+        tsk003_after, _ = cache.get_task("tsk003")
+        assert tsk003_after.line_number > line_before, "tsk003 should have shifted down"
+
+        file_lines = tasks_file.read_text(encoding="utf-8").splitlines()
+        assert tsk003_after.title in file_lines[tsk003_after.line_number]
