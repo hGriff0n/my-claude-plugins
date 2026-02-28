@@ -20,7 +20,7 @@ TAG_TO_EMOJI: Dict[str, str] = {
     'scheduled': '⏳',
     'created': '➕',
     'completed': '✅',
-    'b': '⛔',
+    'blocked': '⛔',
 }
 
 EMOJI_TO_TAG: Dict[str, str] = {v: k for k, v in TAG_TO_EMOJI.items()}

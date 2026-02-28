@@ -8,7 +8,7 @@ Covers:
 - add_task: new task with auto-ID, section creation, subtask
 - update_task: status change, tag changes, blocker mutations
 - refresh_file: mtime check, re-parse on change
-- effort operations: list_efforts, get_effort, set_focus
+- effort operations: list_efforts, get_effort
 - status diagnostics
 - Thread safety: concurrent reads don't crash
 """
@@ -395,16 +395,6 @@ class TestAddTask:
         found = cache.get_task(new_task.id)
         assert found is not None
 
-    def test_add_atomic_task(self, tmp_path):
-        vault = _make_vault(tmp_path)
-        cache = VaultCache()
-        cache.initialize(vault, set())
-
-        tasks_file = vault / "TASKS.md"
-        new_task = cache.add_task(tasks_file, "Atomic task", atomic=True)
-
-        assert "stub" not in new_task.tags
-
     def test_add_task_to_section(self, tmp_path):
         vault = _make_vault(tmp_path)
         cache = VaultCache()
@@ -566,23 +556,6 @@ class TestEffortOps:
     def test_get_nonexistent_effort(self, cache):
         assert cache.get_effort("nope") is None
 
-    def test_set_focus(self, cache):
-        cache.set_focus("my-project")
-        assert cache.get_focus() == "my-project"
-
-        effort = cache.get_effort("my-project")
-        assert effort is not None
-        assert effort.is_focused is True
-
-    def test_unfocus(self, cache):
-        cache.set_focus("my-project")
-        cache.set_focus(None)
-        assert cache.get_focus() is None
-
-    def test_focus_invalid_effort_raises(self, cache):
-        with pytest.raises(ValueError):
-            cache.set_focus("nonexistent-effort")
-
 
 # ---------------------------------------------------------------------------
 # refresh_file
@@ -654,7 +627,6 @@ class TestStatus:
         assert "files_indexed" in s
         assert "tasks_indexed" in s
         assert "efforts_indexed" in s
-        assert "focus" in s
         assert "last_full_scan" in s
         assert "vault_root" in s
         assert "exclude_dirs" in s

@@ -232,7 +232,7 @@ class TestParseContentTasks:
 
     def test_ref_returns_path_and_line(self):
         """ref property returns 'path:line_number' when file_path is set."""
-        tree = parse_content("### Open\n\n- [ ] Task 🆔 ref001\n", Path("vault/TASKS.md"))
+        tree = parse_content("### Open\n\n- [ ] Task 🆔 ref001\n", Path("vault") / "TASKS.md")
         task = tree.sections[0].tasks[0]
         assert task.ref == f"vault/TASKS.md:{task.line_number}"
 

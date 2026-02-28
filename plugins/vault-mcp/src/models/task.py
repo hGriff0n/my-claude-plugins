@@ -39,7 +39,7 @@ class Task:
     def ref(self) -> Optional[str]:
         """Obsidian task reference in 'path:line' format, or None if unavailable."""
         if self.file_path:
-            return f"{self.file_path}:{self.line_number}"
+            return f"{self.file_path.as_posix()}:{self.line_number}"
         return None
 
     @property

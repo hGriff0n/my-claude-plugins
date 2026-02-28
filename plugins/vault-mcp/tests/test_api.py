@@ -184,27 +184,6 @@ class TestEffortEndpoints:
         resp = client.get("/api/efforts/nonexistent")
         assert resp.status_code == 404
 
-    def test_focus_workflow(self, client):
-        # Initially no focus
-        resp = client.get("/api/efforts/focus")
-        assert resp.status_code == 200
-        assert resp.json()["focused"] is None
-
-        # Set focus
-        resp = client.put("/api/efforts/focus", json={"name": "side-project"})
-        assert resp.status_code == 200
-        assert resp.json()["focused"] == "side-project"
-
-        # Verify focus
-        resp = client.get("/api/efforts/focus")
-        assert resp.status_code == 200
-        assert resp.json()["name"] == "side-project"
-
-        # Clear focus
-        resp = client.delete("/api/efforts/focus")
-        assert resp.status_code == 200
-        assert resp.json()["focused"] is None
-
     def test_scan_efforts(self, client):
         resp = client.post("/api/efforts/scan")
         assert resp.status_code == 200

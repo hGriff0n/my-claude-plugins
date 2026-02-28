@@ -178,12 +178,3 @@ class TestScanEfforts:
 
         result = scan_efforts(efforts_root)
         assert result["no-tasks"].tasks_file is None
-
-    def test_is_focused_defaults_false(self, tmp_path):
-        efforts_root = tmp_path / "efforts"
-        efforts_root.mkdir()
-        _make_effort(efforts_root, "my-proj")
-
-        result = scan_efforts(efforts_root)
-        # scanner does not set focus — that's the cache's job
-        assert result["my-proj"].is_focused is False

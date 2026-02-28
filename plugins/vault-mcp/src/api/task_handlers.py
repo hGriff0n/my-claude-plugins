@@ -98,7 +98,7 @@ def handle_task_add(
         if normalized:
             tags["estimate"] = normalized
     if blocked_by:
-        tags["b"] = blocked_by.replace(" ", "")
+        tags["blocked"] = blocked_by.replace(" ", "")
 
     task = cache.add_task(
         Path(file_path),
