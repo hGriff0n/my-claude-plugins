@@ -21,53 +21,34 @@ Focusing, creating, or activating an effort **spawns a new Claude Code tab** (vi
 
 ## MCP Tools (vault-mcp server)
 
-Most effort operations use the vault-mcp MCP server:
-
 - **`effort_list`** — List efforts with optional status filter and task counts
 - **`effort_get`** — Get effort details including task counts by status
+- **`effort_create`** — Create a new effort directory, initialize files, and register it as active. Returns the effort `path`.
+- **`effort_move`** — Move an effort between statuses (`active` / `backlog`). Handles filesystem move and cache refresh. Returns the effort `path`.
 - **`effort_focus`** — Set the focused effort
-- **`effort_unfocus`** — Clear the current focus
-- **`effort_get_focus`** — Get the focused effort and its open tasks
 - **`effort_scan`** — Re-scan the efforts directory to discover changes
 
 ## Commands
 
 ### Create New Effort
 
-Creates effort directory at `efforts/<name>`, writes CLAUDE.md and README.md from templates, calls `effort_scan` to discover it, then `effort_focus` to focus it.
-
-**Post-creation**: Invokes `/task-workflow:init <path>` to create TASKS.md, then spawns a new Claude Code tab via `/windows:spawn-session`.
+Calls `effort_create` with the effort name, which creates the directory and initializes CLAUDE.md, `00 README.md` and `01 TASKS.md` from templates. Then spawns a new Claude Code tab via `/windows:spawn-session`.
 
 **Quote names with spaces**: Use quotes around multi-word names.
 
-### Get Current Focus
-
-Calls `effort_get_focus` MCP tool. Returns the focused effort name, path, and open tasks summary.
-
 ### Focus an Effort
 
-Calls `effort_focus` MCP tool, then spawns a new Claude Code tab via `/windows:spawn-session`.
+Resolves the effort name via `effort_list` (for fuzzy matching), then spawns a new Claude Code tab via `/windows:spawn-session`.
 
-**Fuzzy names**: If user provides partial name, use `effort_list` to confirm exact effort name first.
-
-### Unfocus (Shutdown Sequence)
-
-Unfocus is a **shutdown sequence** for the current effort session:
-1. Resolves the effort name (from argument or current focus via `effort_get_focus`)
-2. Invokes `/daily:log` to record session progress
-3. Calls `effort_unfocus` MCP tool to clear focus
-4. Prints a message suggesting the user close the tab
-5. Invokes `/quit` to exit Claude
+**Fuzzy names**: If user provides partial name, use `effort_list` to confirm exact effort name and path first.
 
 ### Activate (Promote)
 
-Moves effort from backlog to active by relocating the directory from `efforts/__backlog/<name>` to `efforts/<name>`, then calls `effort_scan` and `effort_focus`.
-
-**Post-activate**: Spawns a new Claude Code tab via `/windows:spawn-session`.
+Calls `effort_move` with `status="active"` to move the effort from backlog to active. Then spawns a new Claude Code tab via `/windows:spawn-session`.
 
 ### Backlog (Relegate)
 
-Moves effort from active to backlog by relocating the directory from `efforts/<name>` to `efforts/__backlog/<name>`, then calls `effort_scan`.
+Calls `effort_move` with `status="backlog"` to move the effort from active to the backlog.
 
 ### List Efforts
 
@@ -89,9 +70,9 @@ Use when directories have been manually moved or created.
 ## Effort Structure
 
 Each effort directory contains:
-- `CLAUDE.md`: Required marker file (initialized from `assets/CLAUDE.template.md`)
-- `README.md`: Project overview (initialized from `assets/readme.template.md`)
-- `TASKS.md`: Task tracking (created via `/task-workflow:init`)
+- `CLAUDE.md`: Required marker file (initialized from vault templates)
+- `00 README.md`: Project overview (initialized from vault templates)
+- `01 TASKS.md`: Task tracking (initialized from vault templates)
 - Additional files/folders as needed for the project
 
 ## Error Handling
