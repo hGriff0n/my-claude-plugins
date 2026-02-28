@@ -1,7 +1,7 @@
 ---
 description: Run a structured review routine with interactive checklist.
 argument-hint: "<routine-name>"
-allowed-tools: Bash, Read, TodoWrite, Write, Edit, AskUserQuestion, Skill
+allowed-tools: Bash, TodoWrite, AskUserQuestion, Skill
 ---
 
 Run a structured review routine from `areas/personal/routines/`.
@@ -17,7 +17,7 @@ Valid routines are markdown files in `areas/personal/routines/` with the `n/revi
 Example: `/review morning`, `/review evening`, `/review weekly`
 
 **Steps:**
-1. Read `VAULT_ROOT/areas/personal/routines/$ARGUMENTS.md`, where `VAULT_ROOT` is an environment variable
+1. Read the routine: `obsidian read file=areas/personal/routines/$ARGUMENTS.md`
 2. Follow `## Session Instructions` as context
 3. Use TodoWrite to build the task list from checklist items, skipping nested items
 4. Work through each item conversationally, following nested-item behavior in <nesting/>
@@ -36,26 +36,25 @@ Example: `/review morning`, `/review evening`, `/review weekly`
 
 1. When you reach a parent task that has nested `- [ ]` sub-items, do **not** ask about the parent directly — instead, expand its sub-items into the todo list (via `TodoWrite`) so they appear as individual tracked steps alongside the top-level items
 2. Walk through each sub-item one at a time, marking it `in_progress` then `completed` in the todo list as the user confirms it
-3. Mark each sub-item `[x]` in the file as it's confirmed done
-4. Only mark the parent `[x]` (and complete it in the todo list) once **all** sub-items are marked complete
+3. Complete each sub-item in the todo list as it's confirmed done
+4. Only complete the parent in the todo list once **all** sub-items are marked complete
 
 **Non-task lines** under a checklist item (lines that aren't `- [ ]` items, e.g. plain bullet notes or instructions) are directives for you to act on — not items to ask the user about. Execute them at the appropriate point (e.g. when the parent is being completed).
 </nesting>
 
 <reporting>
-The daily journal file can be found at `VAULT_ROOT/areas/journal/YYYY/MM - MMMM/DD.md`
-
-1. **Locate today's daily note**
-    - Check default path: `VAULT_ROOT/areas/journal/YYYY/MM - MMMM/DD.md`
-    - Create if it doesn't exist by copying `VAULT_ROOT/areas/__metadata/templates/daily.md`
-
-2. **Analyze the conversation** for:
+1. **Analyze the conversation** for:
     - Main topics/tasks worked on
 
-3. **Append a review log** to the "Review" section using the <log_format/> below
-    - Be specific about outcomes, not activities
+2. **Generate and append a review log** to today's daily note:
+    - If the routine file has a `## Report` section, follow its instructions to generate the log content and format
+    - Otherwise, use the <log_format/> below as the format
+    - `obsidian daily:append content="<log>"`
 
-4. **Mark habit completed** by appending the current date (in ISO format `YYYY-MM-DD`) as a list item on a new line after the `entries:` field in the yaml frontmatter of `VAULT_ROOT/areas/personal/routines/habits/reviews`
+3. **Mark habit completed** using the Obsidian CLI on `areas/personal/routines/habits/reviews.md`:
+   - Read current entries: `obsidian property:read name=entries file=reviews`
+   - Append today's date (`YYYY-MM-DD`) to the list, then convert newline-separated dates to comma-separated
+   - Write back: `obsidian property:set name=entries type=list value="<comma-separated dates>" file=reviews`
 </reporting>
 
 <log_format>
