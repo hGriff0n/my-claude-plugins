@@ -49,6 +49,9 @@ Example: `/review morning`, `/review evening`, `/review weekly`
 2. **Generate and append a review log** to today's daily note:
     - If the routine file has a `## Report` section, follow its instructions to generate the log content and format
     - Otherwise, use the <log_format/> below as the format
+    - Ensure the daily note exists:
+      1. `obsidian daily:path` → capture the path
+      2. `obsidian file path="<path>"` → if output starts with `Error:`, run `obsidian create path="<path>"`
     - `obsidian daily:append content="<log>"`
 
 3. **Mark habit completed** using the Obsidian CLI on `areas/personal/routines/habits/reviews.md`:
