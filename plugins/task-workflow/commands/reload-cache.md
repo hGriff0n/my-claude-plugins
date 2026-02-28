@@ -11,5 +11,4 @@ Call the `cache_status` MCP tool (no parameters) and report:
 - Number of files indexed
 - Number of tasks indexed
 - Number of efforts indexed
-- Currently focused effort (if any)
 - Last full scan timestamp

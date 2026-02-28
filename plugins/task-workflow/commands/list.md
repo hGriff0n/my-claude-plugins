@@ -1,7 +1,7 @@
 ---
 description: List and filter tasks, or show blockers for a specific task
 argument-hint: "[blockers <id>] [--status <status>] [--due <range>] [--atomic] [--all]"
-allowed-tools: mcp__vault-mcp__task_list, mcp__vault-mcp__task_blockers, mcp__vault-mcp__effort_get_focus
+allowed-tools: mcp__vault-mcp__task_list, mcp__vault-mcp__task_blockers, Bash
 ---
 
 List tasks or show blockers using MCP tools.
@@ -18,16 +18,15 @@ Call the `task_list` MCP tool with filters mapped from arguments.
 
 ## Scoping
 
-- If `--all` is provided, omit the `effort` parameter (searches entire vault).
+- If `--all` is provided, omit the `file_path` parameter (searches entire vault).
 - If `--file <path>` is provided, use `file_path=<path>`.
-- Otherwise, call `effort_get_focus` to get the current effort name and pass it as the `effort` parameter to scope results to the focused effort. If no effort is focused, omit the `effort` parameter (vault-wide).
+- Otherwise, check for `01 TASKS.md` in the current working directory. If found, use `file_path=$PWD/01 TASKS.md`. If not found, omit `file_path` (vault-wide).
 
 ## Filter mapping
 
 | User flag | MCP parameter | Notes |
 |-----------|--------------|-------|
 | `--status open\|in-progress\|done` | `status` | Default: "open,in-progress" |
-| `--atomic` | `atomic=true` | Only leaf tasks |
 | `--stub` | `stub=true` | Only stub tasks |
 | `--blocked` | `blocked=true` | Only blocked tasks |
 | `--due today` | `due_before=<today's date>` | ISO format YYYY-MM-DD |
@@ -39,7 +38,7 @@ Call the `task_list` MCP tool with filters mapped from arguments.
 
 **Common combinations:**
 
-- Actionable tasks: `atomic=true, status="open", due_before=<end of week>`
+- Actionable tasks: `status="open", due_before=<end of week>`
 - Blocked tasks: `blocked=true`
 - In-progress work: `status="in-progress"`
 - Planning queue: `stub=true`

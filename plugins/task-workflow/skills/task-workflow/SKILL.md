@@ -15,7 +15,7 @@ Use `/task-workflow:init <path>` — reads template and writes TASKS.md to the s
 **Add a task:**
 
 Uses the `task_add` MCP tool via the vault-mcp server:
-- Resolves the target TASKS.md from the focused effort context
+- Resolves the target `01 TASKS.md` from the current working directory
 - Auto-generates a unique task ID and created date
 
 **List tasks:**
@@ -40,8 +40,8 @@ When the user expresses task intent in natural language:
 
 **Examples:**
 
-- "Add task: Implement auth, due Monday, 8h estimate" → `task_add` with title, due, estimate
-- "Show me tasks due this week" → `task_list` with due_before filter
+- "Add task: Implement auth, due Monday, 8h estimate" → `task_add` with title, due, estimate (uses `01 TASKS.md` in cwd)
+- "Show me tasks due this week" → `task_list` with due_before filter (scoped to cwd `01 TASKS.md` if present)
 - "Mark task abc123 as in progress" → `task_update` with status="in-progress"
 - "What's blocking task xyz?" → `task_blockers` with task_id
 - "Archive old completed tasks" → `tasks.py archive --older-than 30`
@@ -55,18 +55,19 @@ Most task operations use the vault-mcp MCP server which provides:
 - **`task_get`** — Get full task detail by ID
 - **`task_update`** — Update task metadata (title, status, dates, blockers)
 - **`task_blockers`** — Show blocking relationships (upstream and downstream)
-- **`cache_status`** — Show vault cache diagnostics
+- **`cache_status`** — Show vault cache diagnostics (files, tasks, efforts indexed; last scan)
 
 The server automatically watches for file changes and refreshes its cache.
 
 ## Context Resolution
 
-When adding or listing tasks, the focused effort provides context:
+When adding or listing tasks, the target file is resolved from the current working directory:
 
-1. Call `effort_get_focus` to get the current effort's `tasks_file` path
-2. Use that path as the `file_path` parameter for task operations
-3. Override with `--file <path>` for explicit file targeting
-4. Use `--all` to search the entire vault
+1. If `--file <path>` is provided, use it directly
+2. Otherwise, check for `01 TASKS.md` in cwd — use it if found
+3. For `add`: fail if `01 TASKS.md` not found in cwd (no implicit fallback)
+4. For `list`: fall back to vault-wide search if `01 TASKS.md` not found in cwd
+5. Use `--all` to force a vault-wide search regardless of cwd
 
 ## Task Format
 
