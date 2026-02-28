@@ -14,8 +14,10 @@ from api.task_handlers import (
     handle_task_update,
 )
 from api.effort_handlers import (
+    handle_effort_create,
     handle_effort_get,
     handle_effort_list,
+    handle_effort_move,
     handle_effort_scan,
 )
 
@@ -45,6 +47,15 @@ class TaskUpdateBody(BaseModel):
     estimate: Optional[str] = None
     blocked_by: Optional[str] = None
     unblock: Optional[str] = None
+
+
+class EffortCreateBody(BaseModel):
+    name: str
+
+
+class EffortMoveBody(BaseModel):
+    backlog: bool = False
+    archive: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +143,16 @@ def register_routes(app_router: APIRouter, cache) -> None:
             cache, status=status, include_task_counts=include_task_counts
         )
 
+    @app_router.post("/efforts", status_code=201)
+    def create_effort(body: EffortCreateBody):
+        try:
+            result = handle_effort_create(cache, name=body.name)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        return result
+
     @app_router.post("/efforts/scan")
     def scan_efforts():
         return handle_effort_scan(cache)
@@ -141,4 +162,17 @@ def register_routes(app_router: APIRouter, cache) -> None:
         result = handle_effort_get(cache, name=name)
         if "error" in result:
             raise HTTPException(status_code=404, detail=result["error"])
+        return result
+
+    @app_router.post("/efforts/{name}/move")
+    def move_effort(name: str, body: EffortMoveBody):
+        try:
+            result = handle_effort_move(
+                cache, name=name, backlog=body.backlog, archive=body.archive
+            )
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if "error" in result:
+            status_code = 404 if "not found" in result["error"] else 400
+            raise HTTPException(status_code=status_code, detail=result["error"])
         return result

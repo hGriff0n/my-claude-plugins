@@ -650,6 +650,10 @@ class VaultCache:
                 efforts = [e for e in efforts if e.status.value == status]
             return sorted(efforts, key=lambda e: e.name)
 
+    @property
+    def vault_root(self) -> Optional[Path]:
+        return self._vault_root
+
     def set_effort_status(self, name: str, status: EffortStatus) -> None:
         """
         Update the status of an effort in the cache.

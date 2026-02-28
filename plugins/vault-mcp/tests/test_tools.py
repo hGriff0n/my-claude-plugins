@@ -8,6 +8,7 @@ Exercises the MCP tool handler functions directly (bypasses transport).
 import json
 import sys
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
@@ -238,6 +239,172 @@ class TestEffortGet:
         result = mcp.get("effort_get")(name="nonexistent")
         data = json.loads(result)
         assert "error" in data
+
+
+# ---------------------------------------------------------------------------
+# Effort create / move tools
+# ---------------------------------------------------------------------------
+
+class TestEffortCreate:
+    def test_create_new_effort(self, setup):
+        """Happy path: obsidian succeeds, effort appears in cache after refresh."""
+        mcp, cache, vault = setup
+        efforts_dir = vault / "efforts"
+
+        def fake_obsidian(*args):
+            # Simulate CLAUDE.md creation so cache.refresh_efforts() finds the effort
+            if "create" in args and any("CLAUDE.md" in a for a in args):
+                new_dir = efforts_dir / "new-effort"
+                new_dir.mkdir(parents=True, exist_ok=True)
+                (new_dir / "CLAUDE.md").write_text("# new-effort\n", encoding="utf-8")
+            return Mock(returncode=0, stderr="")
+
+        with patch("api.effort_handlers._obsidian", side_effect=fake_obsidian):
+            result = mcp.get("effort_create")(name="new-effort")
+        data = json.loads(result)
+        assert "error" not in data
+        assert data["name"] == "new-effort"
+
+    def test_create_duplicate_effort(self, setup):
+        """Sad path: effort with same name already exists."""
+        mcp, cache, vault = setup
+        result = mcp.get("effort_create")(name="side-project")
+        data = json.loads(result)
+        assert "error" in data
+        assert "already exists" in data["error"]
+
+    def test_create_obsidian_failure(self, setup):
+        """Sad path: obsidian CLI returns non-zero exit code."""
+        mcp, cache, vault = setup
+        with patch("api.effort_handlers._obsidian", return_value=Mock(returncode=1, stderr="template not found")):
+            result = mcp.get("effort_create")(name="fail-effort")
+        data = json.loads(result)
+        assert "error" in data
+
+
+class TestEffortMove:
+    def test_move_to_backlog(self, setup):
+        """Happy path: active effort moved to __backlog/."""
+        mcp, cache, vault = setup
+        efforts_dir = vault / "efforts"
+
+        def fake_obsidian(*args):
+            if "move" in args:
+                # Simulate moving CLAUDE.md to backlog
+                backlog_dir = efforts_dir / "__backlog" / "side-project"
+                backlog_dir.mkdir(parents=True, exist_ok=True)
+                (backlog_dir / "CLAUDE.md").write_text("# side-project\n", encoding="utf-8")
+                claude_active = efforts_dir / "side-project" / "CLAUDE.md"
+                if claude_active.exists():
+                    claude_active.unlink()
+            return Mock(returncode=0, stderr="")
+
+        with patch("api.effort_handlers._obsidian", side_effect=fake_obsidian):
+            result = mcp.get("effort_move")(name="side-project", backlog=True, archive=False)
+        data = json.loads(result)
+        assert "error" not in data
+
+    def test_activate_backlog_effort(self, setup):
+        """Happy path: backlog effort moved to active."""
+        mcp, cache, vault = setup
+        efforts_dir = vault / "efforts"
+
+        def fake_obsidian(*args):
+            if "move" in args:
+                active_dir = efforts_dir / "archived"
+                active_dir.mkdir(parents=True, exist_ok=True)
+                (active_dir / "CLAUDE.md").write_text("# archived\n", encoding="utf-8")
+                old_claude = efforts_dir / "__backlog" / "archived" / "CLAUDE.md"
+                if old_claude.exists():
+                    old_claude.unlink()
+            return Mock(returncode=0, stderr="")
+
+        with patch("api.effort_handlers._obsidian", side_effect=fake_obsidian):
+            result = mcp.get("effort_move")(name="archived", backlog=False, archive=False)
+        data = json.loads(result)
+        assert "error" not in data
+
+    def test_move_nonexistent_effort(self, setup):
+        """Sad path: effort not found in cache."""
+        mcp, cache, vault = setup
+        result = mcp.get("effort_move")(name="nonexistent", backlog=True, archive=False)
+        data = json.loads(result)
+        assert "error" in data
+        assert "not found" in data["error"]
+
+    def test_move_active_to_active_rejected(self, setup):
+        """Sad path: activating an already-active effort is rejected."""
+        mcp, cache, vault = setup
+        result = mcp.get("effort_move")(name="side-project", backlog=False, archive=False)
+        data = json.loads(result)
+        assert "error" in data
+        assert "not in backlog" in data["error"]
+
+    def test_move_backlog_to_backlog_rejected(self, setup):
+        """Sad path: backlogging an already-backlog effort is rejected."""
+        mcp, cache, vault = setup
+        result = mcp.get("effort_move")(name="archived", backlog=True, archive=False)
+        data = json.loads(result)
+        assert "error" in data
+        assert "not active" in data["error"]
+
+    def test_archive_effort(self, setup):
+        """Happy path: archive removes effort from tracking."""
+        mcp, cache, vault = setup
+        # Mock succeeds; __archive/ location won't be scanned so effort disappears
+        with patch("api.effort_handlers._obsidian", return_value=Mock(returncode=0, stderr="")):
+            result = mcp.get("effort_move")(name="side-project", backlog=False, archive=True)
+        data = json.loads(result)
+        assert "error" not in data
+        assert data.get("archived") is True or data.get("name") == "side-project"
+
+    def test_move_partial_failure(self, setup):
+        """Sad path: obsidian move returns failure for some files."""
+        mcp, cache, vault = setup
+        with patch("api.effort_handlers._obsidian", return_value=Mock(returncode=1, stderr="failed")):
+            result = mcp.get("effort_move")(name="side-project", backlog=True, archive=False)
+        data = json.loads(result)
+        assert "error" in data
+        assert "failed to move" in data["error"]
+
+    def test_move_visits_nested_subdirectory_files(self, setup):
+        """
+        Files in subdirectories of the effort are included in the move calls.
+
+        Adds a nested file under side-project/assets/logo.png and verifies
+        that _obsidian is called with its vault-relative path (not just top-level
+        files), confirming the iterative DFS walks into subdirectories.
+        """
+        mcp, cache, vault = setup
+        efforts_dir = vault / "efforts"
+
+        # Create a nested file inside the effort
+        assets = efforts_dir / "side-project" / "assets"
+        assets.mkdir(parents=True, exist_ok=True)
+        nested_file = assets / "logo.png"
+        nested_file.write_bytes(b"")
+
+        moved_paths = []
+
+        def capture_obsidian(*args):
+            if "move" in args:
+                # Record the path= argument value
+                for arg in args:
+                    if arg.startswith("path="):
+                        moved_paths.append(arg[len("path="):])
+            return Mock(returncode=0, stderr="")
+
+        with patch("api.effort_handlers._obsidian", side_effect=capture_obsidian):
+            result = mcp.get("effort_move")(name="side-project", backlog=True, archive=False)
+
+        data = json.loads(result)
+        assert "error" not in data
+
+        # The nested file must appear among the moved paths
+        nested_rel = str(nested_file.relative_to(vault))
+        assert any(nested_rel in p or "logo.png" in p for p in moved_paths), (
+            f"Expected nested file in moved paths, got: {moved_paths}"
+        )
 
 
 class TestTaskRefs:

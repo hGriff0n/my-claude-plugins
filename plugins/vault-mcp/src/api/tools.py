@@ -15,8 +15,10 @@ from api.task_handlers import (
     handle_task_update,
 )
 from api.effort_handlers import (
+    handle_effort_create,
     handle_effort_get,
     handle_effort_list,
+    handle_effort_move,
     handle_effort_scan,
 )
 
@@ -275,3 +277,53 @@ def register_tools(mcp: FastMCP, cache) -> None:
             JSON summary of discovered efforts
         """
         return json.dumps(handle_effort_scan(cache), indent=2)
+
+    @mcp.tool()
+    def effort_create(name: str) -> str:
+        """
+        Create a new active effort with CLAUDE.md, README, and TASKS.md from templates.
+
+        If a note named {name} exists under efforts/ or efforts/__ideas/, it is moved
+        into the new effort folder.
+
+        Args:
+            name: Effort name (used as directory name)
+
+        Returns:
+            JSON effort object or error
+        """
+        try:
+            return json.dumps(handle_effort_create(cache, name=name), indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    @mcp.tool()
+    def effort_move(
+        name: str,
+        backlog: bool = False,
+        archive: bool = False,
+    ) -> str:
+        """
+        Move an effort between active, backlog, and archive states.
+
+        Pass backlog=true to move an active effort to __backlog/.
+        Pass archive=true to move any effort to __archive/ (removes from tracking).
+        Pass neither flag to activate a backlog effort.
+
+        Files are moved individually via the obsidian CLI to preserve wikilinks.
+
+        Args:
+            name: Effort name
+            backlog: Move active effort to __backlog/
+            archive: Move effort to __archive/ (permanent, removes from index)
+
+        Returns:
+            JSON updated effort object or error
+        """
+        try:
+            return json.dumps(
+                handle_effort_move(cache, name=name, backlog=backlog, archive=archive),
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)})
