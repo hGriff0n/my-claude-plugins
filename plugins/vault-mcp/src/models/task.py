@@ -33,11 +33,14 @@ class Task:
     line_number: int = 0
     section: Optional[str] = None
     section_level: int = 0
+    file_path: Optional[Path] = None
 
     @property
-    def is_atomic(self) -> bool:
-        """True if task has no children (leaf node)."""
-        return len(self.children) == 0
+    def ref(self) -> Optional[str]:
+        """Obsidian task reference in 'path:line' format, or None if unavailable."""
+        if self.file_path:
+            return f"{self.file_path.as_posix()}:{self.line_number}"
+        return None
 
     @property
     def is_stub(self) -> bool:
@@ -47,12 +50,12 @@ class Task:
     @property
     def is_blocked(self) -> bool:
         """True if task has unresolved blocking dependencies."""
-        return "b" in self.tags or "blocked" in self.tags
+        return "blocked" in self.tags
 
     @property
     def blocking_ids(self) -> List[str]:
         """List of task IDs that block this task."""
-        value = self.tags.get("b", self.tags.get("blocked", ""))
+        value = self.tags.get("blocked", "")
         return [tid.strip() for tid in value.split(",") if tid.strip()] if value else []
 
     def add_blocker(self, blocker_id: str) -> None:
@@ -60,15 +63,14 @@ class Task:
         ids = self.blocking_ids
         if blocker_id not in ids:
             ids.append(blocker_id)
-        self.tags["b"] = ",".join(ids)
+        self.tags["blocked"] = ",".join(ids)
 
     def remove_blocker(self, blocker_id: str) -> None:
         """Remove a blocker ID from this task's blocked list."""
         ids = [i for i in self.blocking_ids if i != blocker_id]
         if ids:
-            self.tags["b"] = ",".join(ids)
+            self.tags["blocked"] = ",".join(ids)
         else:
-            self.tags.pop("b", None)
             self.tags.pop("blocked", None)
 
     def all_tasks(self) -> List[Task]:

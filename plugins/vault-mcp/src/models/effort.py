@@ -28,12 +28,4 @@ class Effort:
     name: str
     path: Path
     status: EffortStatus
-    is_focused: bool = False
     tasks_file: Optional[Path] = None
-
-    @property
-    def display_status(self) -> str:
-        """Human-readable status including focus indicator."""
-        if self.is_focused:
-            return f"{self.status.value} (focused)"
-        return self.status.value

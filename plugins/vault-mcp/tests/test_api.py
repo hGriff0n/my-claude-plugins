@@ -6,13 +6,23 @@ Uses FastAPI TestClient against real VaultCache with a temp vault.
 
 import sys
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import pytest
+from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
 
-from api.app import create_app
+from api.routes import register_routes
+
+
+def create_app(cache) -> FastAPI:
+    app = FastAPI()
+    router = APIRouter(prefix="/api")
+    register_routes(router, cache)
+    app.include_router(router)
+    return app
 from cache.vault_cache import VaultCache
 
 
@@ -174,30 +184,70 @@ class TestEffortEndpoints:
         resp = client.get("/api/efforts/nonexistent")
         assert resp.status_code == 404
 
-    def test_focus_workflow(self, client):
-        # Initially no focus
-        resp = client.get("/api/efforts/focus")
-        assert resp.status_code == 200
-        assert resp.json()["focused"] is None
-
-        # Set focus
-        resp = client.put("/api/efforts/focus", json={"name": "side-project"})
-        assert resp.status_code == 200
-        assert resp.json()["focused"] == "side-project"
-
-        # Verify focus
-        resp = client.get("/api/efforts/focus")
-        assert resp.status_code == 200
-        assert resp.json()["name"] == "side-project"
-
-        # Clear focus
-        resp = client.delete("/api/efforts/focus")
-        assert resp.status_code == 200
-        assert resp.json()["focused"] is None
-
     def test_scan_efforts(self, client):
         resp = client.post("/api/efforts/scan")
         assert resp.status_code == 200
         data = resp.json()
         assert data["scanned"] is True
         assert "side-project" in data["active"]
+
+
+class TestEffortCreateEndpoints:
+    def test_create_effort(self, client_with_vault):
+        client, vault = client_with_vault
+        efforts_dir = vault / "efforts"
+
+        def fake_obsidian(*args):
+            if "create" in args and any("CLAUDE.md" in a for a in args):
+                new_dir = efforts_dir / "new-effort"
+                new_dir.mkdir(parents=True, exist_ok=True)
+                (new_dir / "CLAUDE.md").write_text("# new-effort\n", encoding="utf-8")
+            return Mock(returncode=0, stderr="")
+
+        with patch("api.effort_handlers._obsidian", side_effect=fake_obsidian):
+            resp = client.post("/api/efforts", json={"name": "new-effort"})
+        assert resp.status_code == 201
+        assert resp.json()["name"] == "new-effort"
+
+    def test_create_duplicate_effort(self, client):
+        resp = client.post("/api/efforts", json={"name": "side-project"})
+        assert resp.status_code == 400
+
+    def test_create_obsidian_failure(self, client):
+        with patch("api.effort_handlers._obsidian", return_value=Mock(returncode=1, stderr="template not found")):
+            resp = client.post("/api/efforts", json={"name": "fail-effort"})
+        assert resp.status_code == 400
+
+
+class TestEffortMoveEndpoints:
+    def test_move_to_backlog(self, client_with_vault):
+        client, vault = client_with_vault
+        efforts_dir = vault / "efforts"
+
+        def fake_obsidian(*args):
+            if "move" in args:
+                backlog_dir = efforts_dir / "__backlog" / "side-project"
+                backlog_dir.mkdir(parents=True, exist_ok=True)
+                (backlog_dir / "CLAUDE.md").write_text("# side-project\n", encoding="utf-8")
+                claude_active = efforts_dir / "side-project" / "CLAUDE.md"
+                if claude_active.exists():
+                    claude_active.unlink()
+            return Mock(returncode=0, stderr="")
+
+        with patch("api.effort_handlers._obsidian", side_effect=fake_obsidian):
+            resp = client.post("/api/efforts/side-project/move", json={"backlog": True})
+        assert resp.status_code == 200
+
+    def test_move_not_found(self, client):
+        resp = client.post("/api/efforts/nonexistent/move", json={"backlog": True})
+        assert resp.status_code == 404
+
+    def test_move_invalid_transition(self, client):
+        """Active effort cannot be activated again."""
+        resp = client.post("/api/efforts/side-project/move", json={"backlog": False, "archive": False})
+        assert resp.status_code == 400
+
+    def test_move_partial_failure(self, client):
+        with patch("api.effort_handlers._obsidian", return_value=Mock(returncode=1, stderr="failed")):
+            resp = client.post("/api/efforts/side-project/move", json={"backlog": True})
+        assert resp.status_code == 400

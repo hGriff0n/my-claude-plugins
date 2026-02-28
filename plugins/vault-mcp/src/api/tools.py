@@ -1,213 +1,36 @@
-"""
-Task tool handlers.
-
-Core logic lives in handle_* functions (return dicts).
-MCP wrappers in register_task_tools() serialize to JSON strings.
-"""
+"""MCP tool registration for vault-mcp."""
 
 import json
 import logging
-from pathlib import Path
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
+from api.task_handlers import (
+    handle_cache_status,
+    handle_task_add,
+    handle_task_blockers,
+    handle_task_get,
+    handle_task_list,
+    handle_task_update,
+)
+from api.effort_handlers import (
+    handle_effort_create,
+    handle_effort_get,
+    handle_effort_list,
+    handle_effort_move,
+    handle_effort_scan,
+)
+
 log = logging.getLogger(__name__)
 
 
-def _task_to_dict(task, include_children: bool = True) -> dict:
-    """Serialize a Task to a JSON-serializable dict."""
-    d = {
-        "id": task.id,
-        "title": task.title,
-        "status": task.status,
-        "section": task.section,
-        "indent_level": task.indent_level,
-        "tags": dict(task.tags),
-        "notes": list(task.notes),
-        "is_atomic": task.is_atomic,
-        "is_stub": task.is_stub,
-        "is_blocked": task.is_blocked,
-        "blocking_ids": task.blocking_ids,
-    }
-    if include_children and task.children:
-        d["children"] = [_task_to_dict(c, include_children=True) for c in task.children]
-    return d
+def register_tools(mcp: FastMCP, cache) -> None:
+    """Register all MCP tools onto the FastMCP instance."""
 
-
-# ---------------------------------------------------------------------------
-# Handler functions (return dicts, shared by MCP tools and REST API)
-# ---------------------------------------------------------------------------
-
-
-def handle_task_list(
-    cache,
-    *,
-    status: str = "open,in-progress",
-    effort: Optional[str] = None,
-    due_before: Optional[str] = None,
-    scheduled_before: Optional[str] = None,
-    scheduled_on: Optional[str] = None,
-    stub: Optional[bool] = None,
-    blocked: Optional[bool] = None,
-    atomic: Optional[bool] = None,
-    file_path: Optional[str] = None,
-    parent_id: Optional[str] = None,
-    include_subtasks: bool = False,
-    limit: int = 200,
-) -> list[dict]:
-    fp = Path(file_path) if file_path else None
-    tasks = cache.query_tasks(
-        status=status,
-        effort=effort,
-        due_before=due_before,
-        scheduled_before=scheduled_before,
-        scheduled_on=scheduled_on,
-        stub=stub,
-        blocked=blocked,
-        atomic=atomic,
-        file_path=fp,
-        parent_id=parent_id,
-        include_subtasks=include_subtasks,
-        limit=limit,
-    )
-    return [_task_to_dict(t) for t in tasks]
-
-
-def handle_task_get(cache, *, task_id: str) -> dict:
-    entry = cache.get_task(task_id)
-    if not entry:
-        return {"error": f"Task '{task_id}' not found"}
-    task, file_path = entry
-    result = _task_to_dict(task, include_children=True)
-    result["file_path"] = str(file_path)
-    return result
-
-
-def handle_task_add(
-    cache,
-    *,
-    title: str,
-    file_path: str,
-    section: Optional[str] = None,
-    status: str = "open",
-    due: Optional[str] = None,
-    scheduled: Optional[str] = None,
-    estimate: Optional[str] = None,
-    blocked_by: Optional[str] = None,
-    parent_id: Optional[str] = None,
-    atomic: bool = False,
-) -> dict:
-    from utils.dates import parse_date, parse_duration
-
-    tags = {}
-    if due:
-        parsed = parse_date(due)
-        if parsed:
-            tags["due"] = parsed
-    if scheduled:
-        parsed = parse_date(scheduled)
-        if parsed:
-            tags["scheduled"] = parsed
-    if estimate:
-        normalized = parse_duration(estimate)
-        if normalized:
-            tags["estimate"] = normalized
-    if blocked_by:
-        tags["b"] = blocked_by.replace(" ", "")
-
-    task = cache.add_task(
-        Path(file_path),
-        title,
-        section=section,
-        status=status,
-        tags=tags,
-        parent_id=parent_id,
-        atomic=atomic,
-    )
-    result = _task_to_dict(task)
-    result["file_path"] = file_path
-    return result
-
-
-def handle_task_update(
-    cache,
-    *,
-    task_id: str,
-    title: Optional[str] = None,
-    status: Optional[str] = None,
-    due: Optional[str] = None,
-    scheduled: Optional[str] = None,
-    estimate: Optional[str] = None,
-    blocked_by: Optional[str] = None,
-    unblock: Optional[str] = None,
-) -> dict:
-    from utils.dates import parse_date, parse_duration
-
-    changes = {}
-    if title is not None:
-        changes["title"] = title
-    if status is not None:
-        changes["status"] = status
-    if due is not None:
-        changes["due"] = parse_date(due) if due else ""
-    if scheduled is not None:
-        changes["scheduled"] = parse_date(scheduled) if scheduled else ""
-    if estimate is not None:
-        changes["estimate"] = parse_duration(estimate) if estimate else ""
-    if blocked_by:
-        changes["blocked_by"] = [b.strip() for b in blocked_by.split(",") if b.strip()]
-    if unblock:
-        changes["unblock"] = [b.strip() for b in unblock.split(",") if b.strip()]
-
-    task = cache.update_task(task_id, **changes)
-    if not task:
-        return {"error": f"Task '{task_id}' not found"}
-    return _task_to_dict(task)
-
-
-def handle_task_blockers(cache, *, task_id: str) -> dict:
-    entry = cache.get_task(task_id)
-    if not entry:
-        return {"error": f"Task '{task_id}' not found"}
-
-    task, _ = entry
-    all_ids = cache.get_all_task_ids()
-
-    blocked_by = []
-    for bid in task.blocking_ids:
-        blocker_entry = cache.get_task(bid)
-        if blocker_entry:
-            t, _ = blocker_entry
-            blocked_by.append({"id": t.id, "title": t.title, "status": t.status})
-
-    blocks = []
-    for tid in all_ids:
-        other_entry = cache.get_task(tid)
-        if other_entry:
-            other, _ = other_entry
-            if task_id in other.blocking_ids:
-                blocks.append({"id": other.id, "title": other.title, "status": other.status})
-
-    return {
-        "task_id": task_id,
-        "title": task.title,
-        "blocked_by": blocked_by,
-        "blocks": blocks,
-    }
-
-
-def handle_cache_status(cache) -> dict:
-    return cache.status()
-
-
-# ---------------------------------------------------------------------------
-# MCP tool registration (thin wrappers)
-# ---------------------------------------------------------------------------
-
-
-def register_task_tools(mcp: FastMCP, cache) -> None:
-    """Register all task-related MCP tools onto the FastMCP instance."""
+    # ------------------------------------------------------------------
+    # Task tools
+    # ------------------------------------------------------------------
 
     @mcp.tool()
     def task_list(
@@ -218,7 +41,6 @@ def register_task_tools(mcp: FastMCP, cache) -> None:
         scheduled_on: Optional[str] = None,
         stub: Optional[bool] = None,
         blocked: Optional[bool] = None,
-        atomic: Optional[bool] = None,
         file_path: Optional[str] = None,
         parent_id: Optional[str] = None,
         include_subtasks: bool = False,
@@ -240,7 +62,6 @@ def register_task_tools(mcp: FastMCP, cache) -> None:
             scheduled_on: ISO date (YYYY-MM-DD) — return tasks scheduled for exactly this date
             stub: True = only stubs, False = exclude stubs, omit = include all
             blocked: True = only blocked tasks, False = exclude blocked, omit = all
-            atomic: True = only leaf tasks (no children), False = only parent tasks, omit = all
             file_path: Restrict to a specific TASKS.md file path
             parent_id: Only return direct children of this task ID
             include_subtasks: If True, also return sub-tasks of every matched
@@ -262,7 +83,6 @@ def register_task_tools(mcp: FastMCP, cache) -> None:
                 scheduled_on=scheduled_on,
                 stub=stub,
                 blocked=blocked,
-                atomic=atomic,
                 file_path=file_path,
                 parent_id=parent_id,
                 include_subtasks=include_subtasks,
@@ -295,14 +115,12 @@ def register_task_tools(mcp: FastMCP, cache) -> None:
         estimate: Optional[str] = None,
         blocked_by: Optional[str] = None,
         parent_id: Optional[str] = None,
-        atomic: bool = False,
     ) -> str:
         """
         Add a new task to a TASKS.md file.
 
         The task is auto-assigned a unique ID and a 'created' date.
-        By default, tasks are marked #stub (indicating they need subtasks).
-        Pass atomic=True for leaf tasks that won't have subtasks.
+        Tasks are marked #stub by default (indicating they need subtasks).
 
         Args:
             title: Task title
@@ -314,7 +132,6 @@ def register_task_tools(mcp: FastMCP, cache) -> None:
             estimate: Time estimate (e.g. "2h", "30m", "1d4h")
             blocked_by: Comma-separated IDs of blocking tasks
             parent_id: ID of parent task (makes this a subtask)
-            atomic: If True, does not add #stub tag
 
         Returns:
             JSON object with the new task
@@ -332,7 +149,6 @@ def register_task_tools(mcp: FastMCP, cache) -> None:
                     estimate=estimate,
                     blocked_by=blocked_by,
                     parent_id=parent_id,
-                    atomic=atomic,
                 ),
                 indent=2,
             )
@@ -412,3 +228,102 @@ def register_task_tools(mcp: FastMCP, cache) -> None:
             JSON with file count, task count, effort count, last scan time, etc.
         """
         return json.dumps(handle_cache_status(cache), indent=2)
+
+    # ------------------------------------------------------------------
+    # Effort tools
+    # ------------------------------------------------------------------
+
+    @mcp.tool()
+    def effort_list(
+        status: Optional[str] = None,
+        include_task_counts: bool = False,
+    ) -> str:
+        """
+        List efforts.
+
+        Args:
+            status: Filter by status: "active", "backlog", or omit for all
+            include_task_counts: If True, include the count of non-done tasks per effort
+
+        Returns:
+            JSON array of effort objects
+        """
+        return json.dumps(
+            handle_effort_list(cache, status=status, include_task_counts=include_task_counts),
+            indent=2,
+        )
+
+    @mcp.tool()
+    def effort_get(name: str) -> str:
+        """
+        Get details for a specific effort including open task summary.
+
+        Args:
+            name: Effort name
+
+        Returns:
+            JSON object with effort details and task counts by status
+        """
+        return json.dumps(handle_effort_get(cache, name=name), indent=2)
+
+    @mcp.tool()
+    def effort_scan() -> str:
+        """
+        Rebuild effort state by re-scanning the efforts directory.
+
+        Use this after manually creating, moving, or deleting effort directories.
+
+        Returns:
+            JSON summary of discovered efforts
+        """
+        return json.dumps(handle_effort_scan(cache), indent=2)
+
+    @mcp.tool()
+    def effort_create(name: str) -> str:
+        """
+        Create a new active effort with CLAUDE.md, README, and TASKS.md from templates.
+
+        If a note named {name} exists under efforts/ or efforts/__ideas/, it is moved
+        into the new effort folder.
+
+        Args:
+            name: Effort name (used as directory name)
+
+        Returns:
+            JSON effort object or error
+        """
+        try:
+            return json.dumps(handle_effort_create(cache, name=name), indent=2)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    @mcp.tool()
+    def effort_move(
+        name: str,
+        backlog: bool = False,
+        archive: bool = False,
+    ) -> str:
+        """
+        Move an effort between active, backlog, and archive states.
+
+        Pass backlog=true to move an active effort to __backlog/.
+        Pass archive=true to move any effort to __archive/ (removes from tracking).
+        Pass neither flag to activate a backlog effort.
+
+        Files are moved individually via the obsidian CLI to preserve wikilinks.
+
+        Args:
+            name: Effort name
+            backlog: Move active effort to __backlog/
+            archive: Move effort to __archive/ (permanent, removes from index)
+
+        Returns:
+            JSON updated effort object or error
+        """
+        try:
+            return json.dumps(
+                handle_effort_move(cache, name=name, backlog=backlog, archive=archive),
+                indent=2,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)})

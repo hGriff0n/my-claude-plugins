@@ -61,7 +61,7 @@ class TestSplitTags:
     def test_emoji_blocked_tag(self):
         title, tags = split_tags("Blocked task ⛔ abc123")
         assert title == "Blocked task"
-        assert tags["b"] == "abc123"
+        assert tags["blocked"] == "abc123"
 
     def test_hashtag_with_value(self):
         title, tags = split_tags("Work item #estimate:2h")
@@ -220,14 +220,26 @@ class TestParseContentTasks:
         assert task.is_blocked is True
         assert "abc123" in task.blocking_ids
 
-    def test_is_atomic_leaf(self):
-        tree = parse_content("### Open\n\n- [ ] Leaf 🆔 leaf01\n")
-        assert tree.sections[0].tasks[0].is_atomic is True
+    def test_file_path_set_on_task(self):
+        """Tasks parsed from a file should carry the source file_path."""
+        tree = parse_content("### Open\n\n- [ ] Task 🆔 fp0001\n", Path("my/tasks.md"))
+        assert tree.sections[0].tasks[0].file_path == Path("my/tasks.md")
 
-    def test_is_atomic_parent(self):
-        content = "### Open\n\n- [ ] Parent 🆔 par002\n    - [ ] Child 🆔 chi002\n"
-        tree = parse_content(content)
-        assert tree.sections[0].tasks[0].is_atomic is False
+    def test_file_path_none_without_path(self):
+        """Tasks parsed without a file_path argument have file_path=None."""
+        tree = parse_content("### Open\n\n- [ ] Task 🆔 fp0002\n")
+        assert tree.sections[0].tasks[0].file_path is None
+
+    def test_ref_returns_path_and_line(self):
+        """ref property returns 'path:line_number' when file_path is set."""
+        tree = parse_content("### Open\n\n- [ ] Task 🆔 ref001\n", Path("vault") / "TASKS.md")
+        task = tree.sections[0].tasks[0]
+        assert task.ref == f"vault/TASKS.md:{task.line_number}"
+
+    def test_ref_none_without_file_path(self):
+        """ref is None when file_path is not set."""
+        tree = parse_content("### Open\n\n- [ ] Task 🆔 ref002\n")
+        assert tree.sections[0].tasks[0].ref is None
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +282,36 @@ class TestNotes:
 # ---------------------------------------------------------------------------
 # Round-trip
 # ---------------------------------------------------------------------------
+
+class TestLineNumbers:
+    def test_line_numbers_set_on_parse(self):
+        """Each task's line_number should correspond to its 0-indexed position in the file."""
+        content = "### Open\n\n- [ ] First 🆔 ln0001\n- [ ] Second 🆔 ln0002\n"
+        tree = parse_content(content, Path("test.md"))
+        tasks = tree.sections[0].tasks
+        assert tasks[0].line_number < tasks[1].line_number
+
+    def test_line_numbers_correct_after_round_trip(self):
+        """After write+re-parse, line_number values match actual file positions."""
+        content = "### Open\n\n- [ ] Task A 🆔 ln0003\n- [ ] Task B 🆔 ln0004\n"
+        tree1 = parse_content(content, Path("test.md"))
+
+        with tempfile.NamedTemporaryFile(
+            suffix=".md", mode="w", delete=False, encoding="utf-8"
+        ) as f:
+            tmp_path = Path(f.name)
+
+        try:
+            write_file(tmp_path, tree1)
+            tree2 = parse_file(tmp_path)
+            file_lines = tmp_path.read_text(encoding="utf-8").splitlines()
+            for task in tree2.all_tasks():
+                # The line at task.line_number should contain the task title
+                assert task.title in file_lines[task.line_number], (
+                    f"Task '{task.title}' not found at line {task.line_number}"
+                )
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
 class TestRoundTrip:
     def test_round_trip_sample_file(self):
