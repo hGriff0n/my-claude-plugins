@@ -67,6 +67,7 @@ class EffortMoveBody(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+# TODO: Can we get rid of this somehow? Just declare the routes in global?
 def register_routes(app_router: APIRouter, cache) -> None:
     """Attach all REST routes that use the shared cache."""
 
@@ -107,6 +108,7 @@ def register_routes(app_router: APIRouter, cache) -> None:
                 task even if the sub-tasks don't match the other filters.
             limit: Maximum number of results (default 200)
         """
+        # TODO: Get rid of the handles, they were an old effort because I didn't know we could directly create an mcp server from a rest api
         return handle_task_list(
             cache,
             status=status,
