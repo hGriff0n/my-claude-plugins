@@ -12,6 +12,8 @@ Current canonical format:
 
 from typing import Dict
 
+import emoji
+
 # Emoji representations for Obsidian Tasks plugin compatibility.
 # Tags in this mapping are rendered as: <emoji> <value>
 TAG_TO_EMOJI: Dict[str, str] = {
@@ -31,15 +33,23 @@ def render_tag(name: str, value: str) -> str:
     Render a single tag to its canonical markdown representation.
 
     Args:
-        name: Tag name (e.g. "due", "estimate", "stub")
+        name: Tag name (e.g. "due", "estimate", "stub") or an emoji character
         value: Tag value (empty string for flag-only tags like "stub")
 
     Returns:
-        Canonical tag string (e.g. "📅 2026-02-15", "#estimate:4h", "#stub")
+        Canonical tag string (e.g. "📅 2026-02-15", "#estimate:4h", "#stub",
+        "🚴 412w")
     """
+    # Known emoji tags (name → emoji mapping)
     if name in TAG_TO_EMOJI:
-        emoji = TAG_TO_EMOJI[name]
-        return f"{emoji} {value}"
+        em = TAG_TO_EMOJI[name]
+        return f"{em} {value}"
+    # Unknown emoji tags (the key itself is an emoji)
+    if emoji.is_emoji(name):
+        if value:
+            return f"{name} {value}"
+        return name
+    # Regular hashtag tags
     if value:
         return f"#{name}:{value}"
     return f"#{name}"

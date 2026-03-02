@@ -16,6 +16,8 @@ import re
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
+import emoji
+
 from models.task import CachedFile, SectionBlock, Task, TaskTree
 from utils.formatting import EMOJI_TO_TAG, render_tags
 
@@ -26,6 +28,7 @@ TASK_FILE_NAMES = frozenset({"TASKS.md", "01 TASKS.md"})
 _CHECKBOX_STATUS = {
     "x": "done",
     "/": "in-progress",
+    "-": "cancelled"
 }
 
 
@@ -36,45 +39,152 @@ _CHECKBOX_STATUS = {
 def _parse_checkbox(char: str) -> str:
     return _CHECKBOX_STATUS.get(char.strip().lower(), "open")
 
-
 def _indent_level(indent_str: str) -> int:
     """Convert a leading-whitespace string to a 0-based indent level."""
     spaces = len(indent_str.replace("\t", "    "))
     return spaces // 4
+
+# Pre-compiled patterns used by the split / metadata parser
+_known_emoji_alt = "|".join(re.escape(e) for e in EMOJI_TO_TAG)
+_DATAVIEW_FULL_RE = re.compile(r"[(\[]\s*(\w[\w\s]*?)\s*::\s*(.*?)\s*[)\]]")
+_HASHTAG_VAL_RE = re.compile(r"#([\w/-]+):(\S+)")
+_HASHTAG_RE = re.compile(r"#([\w/-]+)")
+
+# Matches the first occurrence of any metadata flag at a word boundary:
+#   - known emoji (from EMOJI_TO_TAG)
+#   - standalone #tag
+#   - dataview property (key::...) or [key::...]
+_METADATA_START_RE = re.compile(
+    rf"(?:^|(?<=\s))(?:(?P<emoji>{_known_emoji_alt})"
+    rf"|(?P<hash>#[\w/-])"
+    rf"|(?P<dataview>[(\[]\s*\w[\w\s]*?\s*::))",
+)
+
+
+def _bracket_depth_at(text: str, pos: int) -> int:
+    """Count unmatched ``(``, ``[`` minus ``)``, ``]`` in *text[:pos]*."""
+    depth = 0
+    for ch in text[:pos]:
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth = max(0, depth - 1)
+    return depth
+
+
+def _find_metadata_start(text: str) -> Optional[int]:
+    """
+    Find the position where metadata tags begin in *text*.
+
+    Uses a single regex to locate the earliest known-emoji, ``#tag``, or
+    dataview property at a word boundary.  For ``#`` matches the bracket/paren
+    depth of the prefix is checked so that ``#`` inside ``[[wiki-links]]`` or
+    parenthesised text is ignored.
+    """
+    for m in _METADATA_START_RE.finditer(text):
+        if m.group("hash"):
+            if _bracket_depth_at(text, m.start()) == 0:
+                return m.start()
+            continue  # inside brackets — skip this # and keep looking
+        return m.start()
+    return None
+
+
+def _is_metadata_token(tok: str) -> bool:
+    """Check whether a whitespace-delimited token starts a metadata entry."""
+    if tok in EMOJI_TO_TAG:
+        return True
+    if emoji.is_emoji(tok):
+        return True
+    if tok.startswith("#"):
+        return True
+    if tok[0] in "([" and (len(tok) < 2 or tok[1] != "["):
+        return True
+    return False
+
+
+def _parse_metadata(tail: str) -> Dict[str, str]:
+    """
+    Parse a metadata tail string into a tag dictionary.
+
+    The tail is split by whitespace into tokens, then each token is classified:
+
+    - Known emoji (``EMOJI_TO_TAG``): next token is the value
+    - Unknown emoji: greedy — all following tokens until the next metadata
+      token are joined as the value
+    - ``#tag`` or ``#tag:value``: single token
+    - ``(key::value)`` or ``[key::value]``: single token (dataview property)
+    """
+    tokens = tail.split()
+    tags: Dict[str, str] = {}
+    i = 0
+
+    while i < len(tokens):
+        tok = tokens[i]
+
+        # Known emoji → next token is the value
+        if tok in EMOJI_TO_TAG:
+            tags[EMOJI_TO_TAG[tok]] = tokens[i + 1] if i + 1 < len(tokens) else ""
+            i += 2
+            continue
+
+        # Dataview property — may span multiple tokens: [ key :: value ]
+        if tok[0] in "([" and (len(tok) < 2 or tok[1] != "["):
+            closer = ")" if tok[0] == "(" else "]"
+            parts = [tok]
+            j = i + 1
+            while j < len(tokens) and closer not in parts[-1]:
+                parts.append(tokens[j])
+                j += 1
+            dv = _DATAVIEW_FULL_RE.fullmatch(" ".join(parts))
+            if dv:
+                tags[dv.group(1)] = ""
+                i = j
+                continue
+
+        # Hashtag with or without value
+        if tok.startswith("#"):
+            m = _HASHTAG_VAL_RE.fullmatch(tok)
+            if m:
+                tags[m.group(1)] = m.group(2)
+                i += 1
+                continue
+            m = _HASHTAG_RE.fullmatch(tok)
+            if m:
+                tags[m.group(1)] = ""
+                i += 1
+                continue
+
+        # Unknown emoji → greedy value until next metadata token
+        if emoji.is_emoji(tok):
+            i += 1
+            val_parts: List[str] = []
+            while i < len(tokens) and not _is_metadata_token(tokens[i]):
+                val_parts.append(tokens[i])
+                i += 1
+            tags[tok] = " ".join(val_parts)
+            continue
+
+        # Unrecognised token — skip
+        i += 1
+
+    return tags
 
 
 def split_tags(text: str) -> Tuple[str, Dict[str, str]]:
     """
     Split a task content string into (title, tags).
 
-    Tags are always at the end of the line; we find the earliest tag position
-    and split there. Supports both emoji and #hashtag formats.
-
-    Wiki-links ([[...]]) are masked before scanning so that internal ``#``
-    (section) and ``^`` (block) references are not mistaken for tags.
-
-    A negative lookahead prevents one emoji tag from greedily consuming the
-    next emoji as its value (e.g. ``🆔 ➕ 2026-02-25`` won't treat ➕ as the ID).
+    A left-to-right scan finds the first metadata flag (known emoji,
+    ``#tag`` outside brackets/parens, or dataview property) and splits there.
+    The metadata portion is then parsed for known emoji, unknown emoji,
+    hashtags, and dataview properties.
     """
-    tags: Dict[str, str] = {}
-    earliest = len(text)
- 
-    # Mask wiki-links with equal-length spaces so positions stay aligned
-    masked = re.sub(r"\[\[.*?\]\]", lambda m: " " * len(m.group()), text)
- 
-    emoji_pattern = "|".join(re.escape(e) for e in EMOJI_TO_TAG)
-    pattern = rf"(?:#([\w/-]+):|({emoji_pattern})\s+)(\S+)|#([\w/-]+)"
-
-    for m in re.finditer(pattern, masked):
-        if m.group(1):          # #tag:value
-            tags[m.group(1)] = m.group(3)
-        elif m.group(2):        # emoji value
-            tags[EMOJI_TO_TAG[m.group(2)]] = m.group(3)
-        elif m.group(4):        # #tag  (no value)
-            tags[m.group(4)] = ""
-        earliest = min(earliest, m.start())
-
-    return text[:earliest].strip(), tags
+    split_pos = _find_metadata_start(text)
+    if split_pos is None:
+        return text.strip(), {}
+    tags = _parse_metadata(text[split_pos:])
+    return text[:split_pos].strip(), tags
 
 
 def _parse_task_line(line: str) -> Optional[dict]:

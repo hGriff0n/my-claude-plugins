@@ -73,6 +73,16 @@ class TestSplitTags:
         assert title == "Placeholder task"
         assert tags["stub"] == ""
 
+    def test_dataview_property_paren(self):
+        title, tags = split_tags("Placeholder task (dataview::value)")
+        assert title == "Placeholder task"
+        assert tags["dataview"] == ""
+
+    def test_dataview_property_bracket(self):
+        title, tags = split_tags("Placeholder task [ dataview :: value ]")
+        assert title == "Placeholder task"
+        assert tags["dataview"] == ""
+
     def test_multiple_tags(self):
         title, tags = split_tags("Complex task 🆔 x1y2z3 📅 2026-03-01 #estimate:4h #stub")
         assert title == "Complex task"
@@ -80,6 +90,13 @@ class TestSplitTags:
         assert tags["due"] == "2026-03-01"
         assert tags["estimate"] == "4h"
         assert tags["stub"] == ""
+
+    def test_unknown_tags(self):
+        title, tags = split_tags("Complex task 🆔 x1y2z3 🚴 [[412w]] #hashtag")
+        assert title == "Complex task"
+        assert tags["id"] == "x1y2z3"
+        assert tags["🚴"] == "[[412w]]"
+        assert tags["hashtag"] == ""
 
     def test_title_preserved_with_parens(self):
         title, tags = split_tags("Fix (something) important 🆔 abc123")
