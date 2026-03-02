@@ -8,19 +8,17 @@ Startup sequence:
 4. Start VaultWatcher daemon thread
 5. Build FastAPI app with REST routes
 6. Create MCP server from FastAPI app (auto-generates MCP tools)
-7. Run REST on API_PORT, MCP on API_PORT+1
+7. Mount REST at /app, MCP at /mcp on a single parent app
 """
 
 import logging
 import os
 import sys
-import threading
 from pathlib import Path
 import uvicorn
 
 from fastapi import APIRouter, FastAPI
 from fastmcp import FastMCP
-from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 
 from api.routes import register_routes
@@ -79,43 +77,37 @@ def main() -> None:
     log.info("Vault scan complete")
 
     # Start background worker that drains the update queue
-    # cache.start_worker()
+    cache.start_worker()
 
     # Start file system watcher
 
     watcher = VaultWatcher(cache, vault_root, exclude_dirs)
-    # watcher.start()
+    watcher.start()
 
-    # Build FastAPI app and create MCP server from it
+    # Build REST and MCP sub-apps
     rest_app = create_app(cache)
     mcp = FastMCP.from_fastapi(app=rest_app)
+    mcp_asgi = mcp.http_app(transport="streamable-http", path="/mcp")
 
-    # Wrap MCP in a FastAPI app with CORS so browser-based clients
-    # (MCP Inspector) can pass OPTIONS preflight checks
-    mcp_asgi = mcp.http_app(transport="streamable-http")
-    mcp_app = FastAPI(lifespan=mcp_asgi.lifespan)
-    mcp_app.add_middleware(
+    # Parent app: mounts both, carries MCP lifespan + CORS
+    app = FastAPI(
+        title="vault-mcp",
+        redirect_slashes=False,
+        lifespan=mcp_asgi.lifespan,
+    )
+    app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    mcp_app.mount("/", mcp_asgi)
+    app.mount("/app", rest_app)
+    app.mount("/", mcp_asgi)
 
     api_port = int(os.environ.get("API_PORT", "9400"))
-    mcp_port = api_port + 1
-
-    # Run REST and MCP on separate ports
-    def run_rest():
-        log.info("Starting REST server on port %d", api_port)
-        uvicorn.run(rest_app, port=api_port, log_level="info")
-
-    rest_thread = threading.Thread(target=run_rest, daemon=True)
-    rest_thread.start()
-
-    log.info("Starting MCP server on port %d", mcp_port)
+    log.info("Starting vault-mcp server on port %d", api_port)
     try:
-        uvicorn.run(mcp_app, port=mcp_port, log_level="info")
+        uvicorn.run(app, port=api_port, log_level="info")
     finally:
         watcher.stop()
         cache.stop_worker()
