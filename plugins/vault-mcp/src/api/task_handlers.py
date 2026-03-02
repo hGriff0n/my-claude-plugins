@@ -1,4 +1,4 @@
-"""Task handler functions shared by MCP tools and REST API."""
+"""Task handler functions (business logic layer for REST/MCP routes)."""
 
 import logging
 from pathlib import Path

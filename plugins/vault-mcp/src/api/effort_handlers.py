@@ -1,4 +1,4 @@
-"""Effort handler functions shared by MCP tools and REST API."""
+"""Effort handler functions (business logic layer for REST/MCP routes)."""
 
 import logging
 import subprocess

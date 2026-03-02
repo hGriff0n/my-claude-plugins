@@ -662,3 +662,88 @@ class TestThreadSafety:
             t.join()
 
         assert errors == [], f"Concurrent read errors: {errors}"
+
+
+# ---------------------------------------------------------------------------
+# Task refs (line number tracking after mutations)
+# ---------------------------------------------------------------------------
+
+def _make_ref_vault(tmp_path: Path) -> Path:
+    """Create a vault for ref-tracking tests."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+
+    (vault / "TASKS.md").write_text(
+        "### Open\n\n"
+        "- [ ] Buy groceries 🆔 tsk001 ➕ 2026-01-01 📅 2026-02-28 #stub\n"
+        "- [ ] Call dentist 🆔 tsk002 ➕ 2026-01-02 ⛔ tsk001\n\n"
+        "### Done\n\n"
+        "- [x] File taxes 🆔 tsk003 ➕ 2025-12-01 ✅ 2026-01-15\n",
+        encoding="utf-8",
+    )
+
+    active = vault / "efforts" / "side-project"
+    active.mkdir(parents=True)
+    (active / "CLAUDE.md").write_text("# side-project\n")
+    (active / "TASKS.md").write_text(
+        "### Open\n\n"
+        "- [ ] Set up repo 🆔 sp001 ➕ 2026-01-10\n",
+        encoding="utf-8",
+    )
+
+    return vault
+
+
+class TestTaskRefs:
+    def test_ref_set_on_indexed_task(self, tmp_path):
+        """Tasks read from cache should have a non-None ref."""
+        vault = _make_ref_vault(tmp_path)
+        cache = VaultCache()
+        cache.initialize(vault, set())
+        task, _ = cache.get_task("tsk001")
+        assert task.ref is not None
+
+    def test_ref_updated_after_add_subtask(self, tmp_path):
+        """
+        Adding a subtask to a parent inserts a new line between the parent and the
+        next sibling.  After the write+reload, the sibling's ref must reflect its
+        new (shifted) line number.
+        """
+        vault = _make_ref_vault(tmp_path)
+        cache = VaultCache()
+        cache.initialize(vault, set())
+        tasks_file = vault / "TASKS.md"
+
+        tsk002_before, _ = cache.get_task("tsk002")
+        line_before = tsk002_before.line_number
+
+        # Adding a child under tsk001 inserts a line before tsk002
+        cache.add_task(tasks_file, "Subtask of groceries", parent_id="tsk001")
+
+        tsk002_after, _ = cache.get_task("tsk002")
+        assert tsk002_after.line_number > line_before, "tsk002 should have shifted down"
+
+        file_lines = tasks_file.read_text(encoding="utf-8").splitlines()
+        assert tsk002_after.title in file_lines[tsk002_after.line_number]
+
+    def test_ref_updated_after_add_to_earlier_section(self, tmp_path):
+        """
+        Appending a task to an earlier section shifts tasks in later sections.
+        After the write+reload, refs for the later tasks must be correct.
+        """
+        vault = _make_ref_vault(tmp_path)
+        cache = VaultCache()
+        cache.initialize(vault, set())
+        tasks_file = vault / "TASKS.md"
+
+        tsk003_before, _ = cache.get_task("tsk003")
+        line_before = tsk003_before.line_number
+
+        # Append to Open (before Done section where tsk003 lives)
+        cache.add_task(tasks_file, "New open task", section="Open")
+
+        tsk003_after, _ = cache.get_task("tsk003")
+        assert tsk003_after.line_number > line_before, "tsk003 should have shifted down"
+
+        file_lines = tasks_file.read_text(encoding="utf-8").splitlines()
+        assert tsk003_after.title in file_lines[tsk003_after.line_number]

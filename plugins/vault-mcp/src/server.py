@@ -6,22 +6,20 @@ Startup sequence:
 2. Initialize VaultCache (full vault scan)
 3. Start cache background worker thread
 4. Start VaultWatcher daemon thread
-5. Register all MCP tools
-6. Start REST API server in background thread (if API_ENABLED)
-7. Run MCP server (stdio transport)
+5. Build FastAPI app with REST routes
+6. Create MCP server from FastAPI app (auto-generates MCP tools)
+7. Run server on streamable-http transport
 """
 
 import logging
 import os
 import sys
-import threading
 from pathlib import Path
 
 from fastapi import APIRouter, FastAPI
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 
 from api.routes import register_routes
-from api.tools import register_tools
 from cache.vault_cache import VaultCache
 from watcher.vault_watcher import VaultWatcher
 
@@ -38,21 +36,22 @@ def _parse_exclude_dirs(raw: str) -> set[str]:
     return {part.strip() for part in raw.split(",") if part.strip()}
 
 
-def _start_api_server(cache, port: int) -> None:
-    """Run the FastAPI/uvicorn server in a daemon thread."""
-    import uvicorn
-    
-    app = FastAPI(title="vault-mcp", docs_url="/api/docs", openapi_url="/api/openapi.json")
-
+def create_app(cache) -> FastAPI:
+    """Build the FastAPI application with all routes bound to the cache."""
+    app = FastAPI(
+        title="vault-mcp",
+        docs_url="/api/docs",
+        openapi_url="/api/openapi.json",
+    )
+    # TODO: me - think this is automatically done?
     api = APIRouter(prefix="/api")
     register_routes(api, cache)
     app.include_router(api)
-
-    log.info("Starting REST API on port %d", port)
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
+    return app
 
 
 def main() -> None:
+    # TODO: me - Don't think this is needed with obsidian cli
     vault_root_env = os.environ.get("VAULT_ROOT", "")
     if not vault_root_env:
         log.error("VAULT_ROOT environment variable is not set")
@@ -82,22 +81,14 @@ def main() -> None:
     watcher = VaultWatcher(cache, vault_root, exclude_dirs)
     watcher.start()
 
-    # Start REST API in a daemon thread
-    api_enabled = os.environ.get("API_ENABLED", "true").lower() in ("true", "1", "yes")
-    if api_enabled:
-        api_port = int(os.environ.get("API_PORT", "9400"))
-        api_thread = threading.Thread(
-            target=_start_api_server, args=(cache, api_port), daemon=True
-        )
-        api_thread.start()
+    # Build FastAPI app and create MCP server from it
+    app = create_app(cache)
+    mcp = FastMCP.from_fastapi(app=app)
 
-    # Create MCP server and register tools
-    mcp = FastMCP("vault-mcp")
-    register_tools(mcp, cache)
-
-    log.info("Starting vault-mcp server")
+    api_port = int(os.environ.get("API_PORT", "9400"))
+    log.info("Starting vault-mcp server on port %d", api_port)
     try:
-        mcp.run(transport="stdio")
+        mcp.run(transport="streamable-http", port=api_port)
     finally:
         watcher.stop()
         cache.stop_worker()

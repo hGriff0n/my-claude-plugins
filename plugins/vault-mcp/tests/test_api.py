@@ -11,19 +11,10 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import pytest
-from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
 
-from api.routes import register_routes
-
-
-def create_app(cache) -> FastAPI:
-    app = FastAPI()
-    router = APIRouter(prefix="/api")
-    register_routes(router, cache)
-    app.include_router(router)
-    return app
 from cache.vault_cache import VaultCache
+from server import create_app
 
 
 # ---------------------------------------------------------------------------
