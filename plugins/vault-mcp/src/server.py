@@ -21,6 +21,7 @@ from fastmcp import FastMCP
 
 from api.routes import register_routes
 from cache.vault_cache import VaultCache
+from utils.obsidian import obsidian_cli
 from watcher.vault_watcher import VaultWatcher
 
 logging.basicConfig(
@@ -51,15 +52,14 @@ def create_app(cache) -> FastAPI:
 
 
 def main() -> None:
-    # TODO: me - Don't think this is needed with obsidian cli
-    vault_root_env = os.environ.get("VAULT_ROOT", "")
-    if not vault_root_env:
-        log.error("VAULT_ROOT environment variable is not set")
+    r = obsidian_cli("vault", "info=path")
+    if r.returncode != 0:
+        log.error("obsidian CLI not available or no vault configured: %s", r.stderr.strip())
         sys.exit(1)
 
-    vault_root = Path(vault_root_env)
+    vault_root = Path(r.stdout.strip())
     if not vault_root.is_dir():
-        log.error("VAULT_ROOT does not exist or is not a directory: %s", vault_root)
+        log.error("Vault path does not exist or is not a directory: %s", vault_root)
         sys.exit(1)
 
     exclude_raw = os.environ.get("EXCLUDE_DIRS", ".git,.obsidian,node_modules,.trash")

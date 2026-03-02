@@ -1,10 +1,10 @@
 """Effort handler functions (business logic layer for REST/MCP routes)."""
 
 import logging
-import subprocess
 from typing import Optional
 
 from models.effort import EffortStatus
+from utils.obsidian import obsidian_cli
 
 log = logging.getLogger(__name__)
 
@@ -60,31 +60,25 @@ def handle_effort_scan(cache) -> dict:
     }
 
 
-# TODO: Move this to utils/
-def _obsidian(*args: str) -> subprocess.CompletedProcess:
-    """Run an obsidian CLI command. Mockable in tests."""
-    return subprocess.run(["obsidian", *args], capture_output=True, text=True)
-
-
 def handle_effort_create(cache, name: str) -> dict:
     if cache.get_effort(name):
         return {"error": f"Effort '{name}' already exists"}
 
     # Create CLAUDE.md and README from Obsidian templates (creates the folder implicitly)
     for template, file in [("efforts/claude", "CLAUDE"), ("efforts/readme", "00 README")]:
-        r = _obsidian("create", f"template={template}", f"path=\"efforts/{name}/{file}.md\"")
+        r = obsidian_cli("create", f"template={template}", f"path=\"efforts/{name}/{file}.md\"")
         if r.returncode != 0:
             return {"error": f"obsidian create failed: {r.stderr.strip()}"}
 
     # If a loose note with the effort name exists anywhere, move it into the folder
     for src_path in [f"efforts/{name}", f"efforts/__ideas/{name}"]:
-        r = _obsidian("file", f"path=\"{src_path}\"")
+        r = obsidian_cli("file", f"path=\"{src_path}\"")
         if r.returncode == 0:
-            _obsidian("move", f"path=\"{src_path}\"", f"to=\"efforts/{name}/{name}\"")
+            obsidian_cli("move", f"path=\"{src_path}\"", f"to=\"efforts/{name}/{name}\"")
             break
 
     # Create the taskfile
-    r = _obsidian("create", f"template=efforts/taskfile", f"path=\"efforts/{name}/01 TASKS.md\"")
+    r = obsidian_cli("create", f"template=efforts/taskfile", f"path=\"efforts/{name}/01 TASKS.md\"")
     if r.returncode != 0:
         return {"error": f"obsidian create taskfile failed: {r.stderr.strip()}"}
 
@@ -128,7 +122,7 @@ def handle_effort_move(cache, name: str, backlog: bool, archive: bool) -> dict:
             rel_to_effort = item.relative_to(effort.path)
             parent = rel_to_effort.parent
             dest_folder = f"{dest_base}/{parent}" if str(parent) != "." else dest_base
-            r = _obsidian("move", f"path={rel_to_vault}", f"to={dest_folder}")
+            r = obsidian_cli("move", f"path={rel_to_vault}", f"to={dest_folder}")
             if r.returncode != 0:
                 errors.append(str(rel_to_vault))
 

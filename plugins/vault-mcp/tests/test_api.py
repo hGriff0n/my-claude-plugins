@@ -195,7 +195,7 @@ class TestEffortCreateEndpoints:
                 (new_dir / "CLAUDE.md").write_text("# new-effort\n", encoding="utf-8")
             return Mock(returncode=0, stderr="")
 
-        with patch("api.effort_handlers._obsidian", side_effect=fake_obsidian):
+        with patch("api.effort_handlers.obsidian_cli", side_effect=fake_obsidian):
             resp = client.post("/api/efforts", json={"name": "new-effort"})
         assert resp.status_code == 201
         assert resp.json()["name"] == "new-effort"
@@ -205,7 +205,7 @@ class TestEffortCreateEndpoints:
         assert resp.status_code == 400
 
     def test_create_obsidian_failure(self, client):
-        with patch("api.effort_handlers._obsidian", return_value=Mock(returncode=1, stderr="template not found")):
+        with patch("api.effort_handlers.obsidian_cli", return_value=Mock(returncode=1, stderr="template not found")):
             resp = client.post("/api/efforts", json={"name": "fail-effort"})
         assert resp.status_code == 400
 
@@ -225,7 +225,7 @@ class TestEffortMoveEndpoints:
                     claude_active.unlink()
             return Mock(returncode=0, stderr="")
 
-        with patch("api.effort_handlers._obsidian", side_effect=fake_obsidian):
+        with patch("api.effort_handlers.obsidian_cli", side_effect=fake_obsidian):
             resp = client.post("/api/efforts/side-project/move", json={"backlog": True})
         assert resp.status_code == 200
 
@@ -239,6 +239,6 @@ class TestEffortMoveEndpoints:
         assert resp.status_code == 400
 
     def test_move_partial_failure(self, client):
-        with patch("api.effort_handlers._obsidian", return_value=Mock(returncode=1, stderr="failed")):
+        with patch("api.effort_handlers.obsidian_cli", return_value=Mock(returncode=1, stderr="failed")):
             resp = client.post("/api/efforts/side-project/move", json={"backlog": True})
         assert resp.status_code == 400
