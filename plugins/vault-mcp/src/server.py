@@ -17,11 +17,12 @@ import sys
 from pathlib import Path
 import uvicorn
 
-from fastapi import APIRouter, FastAPI
+from fastapi import FastAPI
 from fastmcp import FastMCP
 from starlette.middleware.cors import CORSMiddleware
 
-from api.routes import register_routes
+from api.deps import set_cache
+from api.routes import router
 from cache.vault_cache import VaultCache
 from utils.obsidian import obsidian_cli
 from watcher.vault_watcher import VaultWatcher
@@ -39,17 +40,15 @@ def _parse_exclude_dirs(raw: str) -> set[str]:
     return {part.strip() for part in raw.split(",") if part.strip()}
 
 
-def create_app(cache) -> FastAPI:
-    """Build the FastAPI application with all routes bound to the cache."""
+def create_app() -> FastAPI:
+    """Build the FastAPI application with all routes."""
     app = FastAPI(
         title="vault-mcp",
         docs_url="/docs",
         openapi_url="/openapi.json",
         redirect_slashes=False
     )
-    api = APIRouter()
-    register_routes(api, cache)
-    app.include_router(api)
+    app.include_router(router)
     return app
 
 
@@ -84,8 +83,9 @@ def main() -> None:
     watcher = VaultWatcher(cache, vault_root, exclude_dirs)
     watcher.start()
 
-    # Build REST and MCP sub-apps
-    rest_app = create_app(cache)
+    # Wire cache into the dependency provider, then build REST and MCP sub-apps
+    set_cache(cache)
+    rest_app = create_app()
     mcp = FastMCP.from_fastapi(app=rest_app)
     mcp_asgi = mcp.http_app(transport="streamable-http", path="/mcp")
 
