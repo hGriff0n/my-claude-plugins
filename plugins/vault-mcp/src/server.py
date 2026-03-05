@@ -87,6 +87,22 @@ def main() -> None:
     set_cache(cache)
     rest_app = create_app()
     mcp = FastMCP.from_fastapi(app=rest_app)
+
+    @mcp.tool("task_archive")
+    def task_archive() -> dict:
+        """Archive completed tasks to daily notes.
+
+        Finds all completed tasks, groups them by completion date, writes them
+        to the appropriate daily note files, and removes them from the source
+        task files. Done parents with open children are reopened with a
+        blocking reference to their open subtasks.
+        """
+        from scripts.archive_tasks import archive_tasks
+
+        api_port = int(os.environ.get("API_PORT", "9400"))
+        api_base = f"http://localhost:{api_port}"
+        return archive_tasks(cache, api_base=api_base)
+
     mcp_asgi = mcp.http_app(transport="streamable-http", path="/mcp")
 
     # Parent app: mounts both, carries MCP lifespan + CORS

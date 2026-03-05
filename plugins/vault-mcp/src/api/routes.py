@@ -297,28 +297,6 @@ def get_blockers(task_id: str, cache=Depends(get_cache)):
         "blocks": blocks,
     }
 
-# TODO: me - This actually makes more sense as an mcp endpoint
-# Because of my setup, those are still usable as rest endpoints
-# And they are automatically on the same server and the same cache
-@router.post("/tasks/archive", operation_id="task_archive")
-def archive_tasks_endpoint(cache=Depends(get_cache)):
-    """Archive completed tasks to daily notes.
-
-    Finds all completed tasks, groups them by completion date, writes them
-    to the appropriate daily note files, and removes them from the source
-    task files. Done parents with open children are reopened with a
-    blocking reference to their open subtasks.
-
-    This endpoint is designed to be called by an external scheduler
-    (e.g. cron) to run overnight.
-    """
-    from scripts.archive_tasks import archive_tasks
-
-    api_port = int(__import__("os").environ.get("API_PORT", "9400"))
-    api_base = f"http://localhost:{api_port}"
-    result = archive_tasks(cache, api_base=api_base)
-    return result
-
 
 @router.get("/cache/status", operation_id="cache_status")
 def get_cache_status(cache=Depends(get_cache)):
