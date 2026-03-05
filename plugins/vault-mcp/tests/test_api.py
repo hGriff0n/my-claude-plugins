@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 import pytest
 from fastapi.testclient import TestClient
 
+from api.deps import set_cache
 from cache.vault_cache import VaultCache
 from server import create_app
 
@@ -55,7 +56,8 @@ def client(tmp_path):
     vault = _make_vault(tmp_path)
     cache = VaultCache()
     cache.initialize(vault, set())
-    app = create_app(cache)
+    set_cache(cache)
+    app = create_app()
     return TestClient(app)
 
 
@@ -69,7 +71,8 @@ def client_with_vault(tmp_path):
     vault = _make_vault(tmp_path)
     cache = VaultCache()
     cache.initialize(vault, set())
-    app = create_app(cache)
+    set_cache(cache)
+    app = create_app()
     return TestClient(app), vault
 
 
@@ -79,44 +82,44 @@ def client_with_vault(tmp_path):
 
 class TestTaskEndpoints:
     def test_list_tasks(self, client):
-        resp = client.get("/api/tasks")
+        resp = client.get("/tasks")
         assert resp.status_code == 200
         data = resp.json()
         assert isinstance(data, list)
         assert len(data) >= 2  # tsk001, tsk002 are open
 
     def test_list_tasks_filter_status(self, client):
-        resp = client.get("/api/tasks", params={"status": "done"})
+        resp = client.get("/tasks", params={"status": "done"})
         assert resp.status_code == 200
         ids = {t["id"] for t in resp.json()}
         assert "tsk003" in ids
 
     def test_list_tasks_filter_effort(self, client):
-        resp = client.get("/api/tasks", params={"status": "open,in-progress,done", "effort": "side-project"})
+        resp = client.get("/tasks", params={"status": "open,in-progress,done", "effort": "side-project"})
         assert resp.status_code == 200
         ids = {t["id"] for t in resp.json()}
         assert "sp001" in ids
         assert "tsk001" not in ids
 
     def test_list_tasks_filter_blocked(self, client):
-        resp = client.get("/api/tasks", params={"status": "open,in-progress,done", "blocked": True})
+        resp = client.get("/tasks", params={"status": "open,in-progress,done", "blocked": True})
         assert resp.status_code == 200
         ids = {t["id"] for t in resp.json()}
         assert "tsk002" in ids
 
     def test_get_task(self, client):
-        resp = client.get("/api/tasks/tsk001")
+        resp = client.get("/tasks/tsk001")
         assert resp.status_code == 200
         data = resp.json()
         assert data["title"] == "Buy groceries"
 
     def test_get_task_not_found(self, client):
-        resp = client.get("/api/tasks/nonexistent")
+        resp = client.get("/tasks/nonexistent")
         assert resp.status_code == 404
 
     def test_add_task(self, client_with_vault):
         client, vault = client_with_vault
-        resp = client.post("/api/tasks", json={
+        resp = client.post("/tasks", json={
             "title": "New REST task",
             "file_path": str(vault / "TASKS.md"),
         })
@@ -126,23 +129,23 @@ class TestTaskEndpoints:
         assert "id" in data
 
     def test_update_task(self, client):
-        resp = client.patch("/api/tasks/tsk001", json={"status": "done"})
+        resp = client.patch("/tasks/tsk001", json={"status": "done"})
         assert resp.status_code == 200
         assert resp.json()["status"] == "done"
 
     def test_update_task_not_found(self, client):
-        resp = client.patch("/api/tasks/nonexistent", json={"status": "done"})
+        resp = client.patch("/tasks/nonexistent", json={"status": "done"})
         assert resp.status_code == 404
 
     def test_get_blockers(self, client):
-        resp = client.get("/api/tasks/tsk002/blockers")
+        resp = client.get("/tasks/tsk002/blockers")
         assert resp.status_code == 200
         data = resp.json()
         blocker_ids = {b["id"] for b in data["blocked_by"]}
         assert "tsk001" in blocker_ids
 
     def test_cache_status(self, client):
-        resp = client.get("/api/cache/status")
+        resp = client.get("/cache/status")
         assert resp.status_code == 200
         data = resp.json()
         assert "tasks_indexed" in data
@@ -154,29 +157,29 @@ class TestTaskEndpoints:
 
 class TestEffortEndpoints:
     def test_list_efforts(self, client):
-        resp = client.get("/api/efforts")
+        resp = client.get("/efforts")
         assert resp.status_code == 200
         names = {e["name"] for e in resp.json()}
         assert "side-project" in names
 
     def test_list_efforts_filter_active(self, client):
-        resp = client.get("/api/efforts", params={"status": "active"})
+        resp = client.get("/efforts", params={"status": "active"})
         assert resp.status_code == 200
         names = {e["name"] for e in resp.json()}
         assert "side-project" in names
         assert "archived" not in names
 
     def test_get_effort(self, client):
-        resp = client.get("/api/efforts/side-project")
+        resp = client.get("/efforts/side-project")
         assert resp.status_code == 200
         assert resp.json()["name"] == "side-project"
 
     def test_get_effort_not_found(self, client):
-        resp = client.get("/api/efforts/nonexistent")
+        resp = client.get("/efforts/nonexistent")
         assert resp.status_code == 404
 
     def test_scan_efforts(self, client):
-        resp = client.post("/api/efforts/scan")
+        resp = client.post("/efforts/scan")
         assert resp.status_code == 200
         data = resp.json()
         assert data["scanned"] is True
@@ -195,18 +198,18 @@ class TestEffortCreateEndpoints:
                 (new_dir / "CLAUDE.md").write_text("# new-effort\n", encoding="utf-8")
             return Mock(returncode=0, stderr="")
 
-        with patch("api.effort_handlers.obsidian_cli", side_effect=fake_obsidian):
-            resp = client.post("/api/efforts", json={"name": "new-effort"})
+        with patch("api.routes.obsidian_cli", side_effect=fake_obsidian):
+            resp = client.post("/efforts", json={"name": "new-effort"})
         assert resp.status_code == 201
         assert resp.json()["name"] == "new-effort"
 
     def test_create_duplicate_effort(self, client):
-        resp = client.post("/api/efforts", json={"name": "side-project"})
+        resp = client.post("/efforts", json={"name": "side-project"})
         assert resp.status_code == 400
 
     def test_create_obsidian_failure(self, client):
-        with patch("api.effort_handlers.obsidian_cli", return_value=Mock(returncode=1, stderr="template not found")):
-            resp = client.post("/api/efforts", json={"name": "fail-effort"})
+        with patch("api.routes.obsidian_cli", return_value=Mock(returncode=1, stderr="template not found")):
+            resp = client.post("/efforts", json={"name": "fail-effort"})
         assert resp.status_code == 400
 
 
@@ -225,20 +228,20 @@ class TestEffortMoveEndpoints:
                     claude_active.unlink()
             return Mock(returncode=0, stderr="")
 
-        with patch("api.effort_handlers.obsidian_cli", side_effect=fake_obsidian):
-            resp = client.post("/api/efforts/side-project/move", json={"backlog": True})
+        with patch("api.routes.obsidian_cli", side_effect=fake_obsidian):
+            resp = client.post("/efforts/side-project/move", json={"backlog": True})
         assert resp.status_code == 200
 
     def test_move_not_found(self, client):
-        resp = client.post("/api/efforts/nonexistent/move", json={"backlog": True})
+        resp = client.post("/efforts/nonexistent/move", json={"backlog": True})
         assert resp.status_code == 404
 
     def test_move_invalid_transition(self, client):
         """Active effort cannot be activated again."""
-        resp = client.post("/api/efforts/side-project/move", json={"backlog": False, "archive": False})
+        resp = client.post("/efforts/side-project/move", json={"backlog": False, "archive": False})
         assert resp.status_code == 400
 
     def test_move_partial_failure(self, client):
-        with patch("api.effort_handlers.obsidian_cli", return_value=Mock(returncode=1, stderr="failed")):
-            resp = client.post("/api/efforts/side-project/move", json={"backlog": True})
+        with patch("api.routes.obsidian_cli", return_value=Mock(returncode=1, stderr="failed")):
+            resp = client.post("/efforts/side-project/move", json={"backlog": True})
         assert resp.status_code == 400
