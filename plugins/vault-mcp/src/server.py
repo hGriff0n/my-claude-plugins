@@ -12,6 +12,8 @@ Startup sequence:
 """
 
 import logging
+import logging.handlers
+from datetime import datetime
 import os
 import sys
 from pathlib import Path
@@ -27,10 +29,27 @@ from cache.vault_cache import VaultCache
 from utils.obsidian import obsidian_cli
 from watcher.vault_watcher import VaultWatcher
 
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w")
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w")
+
+_log_dir = Path(r"C:\\Users\\ghoop\\Desktop\\claude-plugins\\my-claude-plugins\\plugins\\vault-mcp\\logs")
+_log_dir.mkdir(exist_ok=True)
+
+_log_file = _log_dir / f"server_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.log"
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    stream=sys.stderr,
+    handlers=[
+        h for h in [
+            logging.StreamHandler(sys.stderr) if sys.stderr else None,
+            logging.handlers.TimedRotatingFileHandler(
+                _log_file, when="midnight", backupCount=14,
+            ),
+        ] if h is not None
+    ],
 )
 log = logging.getLogger(__name__)
 
@@ -124,6 +143,8 @@ def main() -> None:
     log.info("Starting vault-mcp server on port %d", api_port)
     try:
         uvicorn.run(app, port=api_port, log_level="info")
+    except Exception as e:
+        log.error("Execption: %s", e)
     finally:
         watcher.stop()
         cache.stop_worker()

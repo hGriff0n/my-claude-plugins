@@ -10,7 +10,7 @@ Current canonical format:
 - Hashtag tags: estimate, actual, stub, routine, and any unknown tags
 """
 
-from typing import Dict
+from typing import Dict, Set
 
 import emoji
 
@@ -27,17 +27,22 @@ TAG_TO_EMOJI: Dict[str, str] = {
 
 EMOJI_TO_TAG: Dict[str, str] = {v: k for k, v in TAG_TO_EMOJI.items()}
 
+# Tags that are always rendered as dataview properties regardless of how they
+# were originally written. Dataview properties render as `[<tag>::<value>]`.
+TAG_FORCE_DATAVIEW: Set[str] = {"estimate", "actual"}
 
-def render_tag(name: str, value: str) -> str:
+
+def render_tag(name: str, value: str, is_dataview: bool = False) -> str:
     """
     Render a single tag to its canonical markdown representation.
 
     Args:
         name: Tag name (e.g. "due", "estimate", "stub") or an emoji character
         value: Tag value (empty string for flag-only tags like "stub")
+        is_dataview: True if the tag was originally declared as a dataview property
 
     Returns:
-        Canonical tag string (e.g. "📅 2026-02-15", "#estimate:4h", "#stub",
+        Canonical tag string (e.g. "📅 2026-02-15", "[estimate::4h]", "#stub",
         "🚴 412w")
     """
     # Known emoji tags (name → emoji mapping)
@@ -49,20 +54,29 @@ def render_tag(name: str, value: str) -> str:
         if value:
             return f"{name} {value}"
         return name
+    # Dataview properties: forced tags or originally declared as dataview
+    if name in TAG_FORCE_DATAVIEW or is_dataview:
+        if value:
+            return f"[{name}:: {value}]"
+        return f"[{name}::]"
     # Regular hashtag tags
     if value:
         return f"#{name}:{value}"
     return f"#{name}"
 
 
-def render_tags(tags: Dict[str, str]) -> str:
+def render_tags(tags: Dict[str, str], dataview_tags: Set[str] = frozenset()) -> str:
     """
     Render all tags to a space-separated string.
 
     Args:
         tags: Dict mapping tag names to values
+        dataview_tags: Set of tag names that were declared as dataview properties
 
     Returns:
         Space-separated string of rendered tags, or empty string if no tags
     """
-    return " ".join(render_tag(name, value) for name, value in tags.items())
+    return " ".join(
+        render_tag(name, value, is_dataview=(name in dataview_tags))
+        for name, value in tags.items()
+    )

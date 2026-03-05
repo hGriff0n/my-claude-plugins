@@ -14,7 +14,7 @@ so the canonical tag format is always applied on write-back.
 
 import re
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Set, Tuple
 
 import emoji
 
@@ -103,7 +103,7 @@ def _is_metadata_token(tok: str) -> bool:
     return False
 
 
-def _parse_metadata(tail: str) -> Dict[str, str]:
+def _parse_metadata(tail: str) -> Tuple[Dict[str, str], Set[str]]:
     """
     Parse a metadata tail string into a tag dictionary.
 
@@ -114,9 +114,14 @@ def _parse_metadata(tail: str) -> Dict[str, str]:
       token are joined as the value
     - ``#tag`` or ``#tag:value``: single token
     - ``(key::value)`` or ``[key::value]``: single token (dataview property)
+
+    Returns:
+        (tags, dataview_tags) — the tag dict and the set of tag names that
+        were declared using dataview property syntax.
     """
     tokens = tail.split()
     tags: Dict[str, str] = {}
+    dataview_tags: Set[str] = set()
     i = 0
 
     while i < len(tokens):
@@ -138,7 +143,8 @@ def _parse_metadata(tail: str) -> Dict[str, str]:
                 j += 1
             dv = _DATAVIEW_FULL_RE.fullmatch(" ".join(parts))
             if dv:
-                tags[dv.group(1)] = ""
+                tags[dv.group(1)] = dv.group(2)
+                dataview_tags.add(dv.group(1))
                 i = j
                 continue
 
@@ -168,23 +174,27 @@ def _parse_metadata(tail: str) -> Dict[str, str]:
         # Unrecognised token — skip
         i += 1
 
-    return tags
+    return tags, dataview_tags
 
 
-def split_tags(text: str) -> Tuple[str, Dict[str, str]]:
+def split_tags(text: str) -> Tuple[str, Dict[str, str], Set[str]]:
     """
-    Split a task content string into (title, tags).
+    Split a task content string into (title, tags, dataview_tags).
 
     A left-to-right scan finds the first metadata flag (known emoji,
     ``#tag`` outside brackets/parens, or dataview property) and splits there.
     The metadata portion is then parsed for known emoji, unknown emoji,
     hashtags, and dataview properties.
+
+    Returns:
+        (title, tags, dataview_tags) — dataview_tags is the set of tag names
+        that were declared using dataview property syntax.
     """
     split_pos = _find_metadata_start(text)
     if split_pos is None:
-        return text.strip(), {}
-    tags = _parse_metadata(text[split_pos:])
-    return text[:split_pos].strip(), tags
+        return text.strip(), {}, set()
+    tags, dataview_tags = _parse_metadata(text[split_pos:])
+    return text[:split_pos].strip(), tags, dataview_tags
 
 
 def _parse_task_line(line: str) -> Optional[dict]:
@@ -286,11 +296,12 @@ def parse_content(content: str, file_path: Optional[Path] = None) -> TaskTree:
             if td is None:
                 continue
 
-            title, tags = split_tags(td["content"])
+            title, tags, dataview_tags = split_tags(td["content"])
             task = Task(
                 title=title,
                 status=td["status"],
                 tags=tags,
+                dataview_tags=dataview_tags,
                 id=tags.get("id"),
                 indent_level=td["indent_level"],
                 line_number=line_num,
@@ -342,7 +353,7 @@ def _serialize_task(task: Task, indent_level: int = 0) -> List[str]:
     indent = "    " * indent_level
     checkbox = {"done": "[x]", "in-progress": "[/]"}.get(task.status, "[ ]")
 
-    tag_str = render_tags(task.tags)
+    tag_str = render_tags(task.tags, task.dataview_tags)
     if tag_str:
         task_line = f"{indent}- {checkbox} {task.title} {tag_str}"
     else:

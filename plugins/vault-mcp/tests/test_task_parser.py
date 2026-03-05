@@ -18,6 +18,7 @@ import pytest
 import tempfile
 
 from parsers.task_parser import parse_content, parse_file, split_tags, write_file
+from utils.formatting import render_tag, render_tags, TAG_FORCE_DATAVIEW
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -29,62 +30,79 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 class TestSplitTags:
     def test_no_tags(self):
-        title, tags = split_tags("Just a task title")
+        title, tags, dv = split_tags("Just a task title")
         assert title == "Just a task title"
         assert tags == {}
+        assert dv == set()
 
     def test_emoji_id_tag(self):
-        title, tags = split_tags("My task 🆔 abc123")
+        title, tags, _dv = split_tags("My task 🆔 abc123")
         assert title == "My task"
         assert tags["id"] == "abc123"
 
     def test_emoji_due_tag(self):
-        title, tags = split_tags("Fix bug 📅 2026-02-15")
+        title, tags, _dv = split_tags("Fix bug 📅 2026-02-15")
         assert title == "Fix bug"
         assert tags["due"] == "2026-02-15"
 
     def test_emoji_created_tag(self):
-        title, tags = split_tags("New task ➕ 2026-01-01")
+        title, tags, _dv = split_tags("New task ➕ 2026-01-01")
         assert title == "New task"
         assert tags["created"] == "2026-01-01"
 
     def test_emoji_scheduled_tag(self):
-        title, tags = split_tags("Review PR ⏳ 2026-02-20")
+        title, tags, _dv = split_tags("Review PR ⏳ 2026-02-20")
         assert title == "Review PR"
         assert tags["scheduled"] == "2026-02-20"
 
     def test_emoji_completed_tag(self):
-        title, tags = split_tags("Done task ✅ 2026-01-15")
+        title, tags, _dv = split_tags("Done task ✅ 2026-01-15")
         assert title == "Done task"
         assert tags["completed"] == "2026-01-15"
 
     def test_emoji_blocked_tag(self):
-        title, tags = split_tags("Blocked task ⛔ abc123")
+        title, tags, _dv = split_tags("Blocked task ⛔ abc123")
         assert title == "Blocked task"
         assert tags["blocked"] == "abc123"
 
     def test_hashtag_with_value(self):
-        title, tags = split_tags("Work item #estimate:2h")
+        title, tags, _dv = split_tags("Work item #estimate:2h")
         assert title == "Work item"
         assert tags["estimate"] == "2h"
 
     def test_hashtag_without_value(self):
-        title, tags = split_tags("Placeholder task #stub")
+        title, tags, _dv = split_tags("Placeholder task #stub")
         assert title == "Placeholder task"
         assert tags["stub"] == ""
 
     def test_dataview_property_paren(self):
-        title, tags = split_tags("Placeholder task (dataview::value)")
+        title, tags, dv = split_tags("Placeholder task (dataview::value)")
         assert title == "Placeholder task"
-        assert tags["dataview"] == ""
+        assert tags["dataview"] == "value"
+        assert "dataview" in dv
 
     def test_dataview_property_bracket(self):
-        title, tags = split_tags("Placeholder task [ dataview :: value ]")
+        title, tags, dv = split_tags("Placeholder task [dataview:: value]")
         assert title == "Placeholder task"
-        assert tags["dataview"] == ""
+        assert tags["dataview"] == "value"
+        assert "dataview" in dv
+
+    def test_dataview_property_bracket_spaced(self):
+        title, tags, dv = split_tags("Placeholder task [ dataview :: value ]")
+        assert title == "Placeholder task"
+        assert tags["dataview"] == "value"
+        assert "dataview" in dv
+
+    def test_dataview_tags_not_set_for_emoji(self):
+        _title, _tags, dv = split_tags("Task 🆔 abc123 📅 2026-01-01")
+        assert dv == set()
+
+    def test_dataview_tags_not_set_for_hashtag(self):
+        _title, _tags, dv = split_tags("Task #estimate:2h #stub")
+        assert dv == set()
 
     def test_multiple_tags(self):
-        title, tags = split_tags("Complex task 🆔 x1y2z3 📅 2026-03-01 #estimate:4h #stub")
+        title, tags, _dv = split_tags("Complex task 🆔 x1y2z3 📅 2026-03-01 #estimate:4h #stub")
         assert title == "Complex task"
         assert tags["id"] == "x1y2z3"
         assert tags["due"] == "2026-03-01"
@@ -92,47 +110,46 @@ class TestSplitTags:
         assert tags["stub"] == ""
 
     def test_unknown_tags(self):
-        title, tags = split_tags("Complex task 🆔 x1y2z3 🚴 [[412w]] #hashtag")
+        title, tags, _dv = split_tags("Complex task 🆔 x1y2z3 🚴 [[412w]] #hashtag")
         assert title == "Complex task"
         assert tags["id"] == "x1y2z3"
         assert tags["🚴"] == "[[412w]]"
         assert tags["hashtag"] == ""
 
     def test_title_preserved_with_parens(self):
-        title, tags = split_tags("Fix (something) important 🆔 abc123")
+        title, tags, _dv = split_tags("Fix (something) important 🆔 abc123")
         assert "Fix (something) important" in title
 
     def test_wikilink_hash_not_parsed_as_tag(self):
-        title, tags = split_tags("See [[Foo#Bar]] for details 🆔 abc123")
+        title, tags, _dv = split_tags("See [[Foo#Bar]] for details 🆔 abc123")
         assert "[[Foo#Bar]]" in title
         assert "Bar" not in tags
         assert tags["id"] == "abc123"
 
     def test_wikilink_section_and_block(self):
-        title, tags = split_tags("Ref [[Foo#Bar^Baz]] here #stub")
+        title, tags, _dv = split_tags("Ref [[Foo#Bar^Baz]] here #stub")
         assert "[[Foo#Bar^Baz]]" in title
         assert "Bar" not in tags
         assert "stub" in tags
 
     def test_wikilink_with_alias(self):
-        title, tags = split_tags("Check [[Note#Section|display text]] 🆔 def456")
+        title, tags, _dv = split_tags("Check [[Note#Section|display text]] 🆔 def456")
         assert "[[Note#Section|display text]]" in title
         assert "Section" not in tags
         assert tags["id"] == "def456"
 
     def test_plain_wikilink_no_hash(self):
-        title, tags = split_tags("See [[SomeNote]] for info #estimate:2h")
+        title, tags, _dv = split_tags("See [[SomeNote]] for info #estimate:2h")
         assert "[[SomeNote]]" in title
         assert tags["estimate"] == "2h"
 
     def test_multiple_wikilinks(self):
-        title, tags = split_tags("Link [[A#B]] and [[C#D^E]] 📅 2026-03-01 🆔 abc123")
+        title, tags, _dv = split_tags("Link [[A#B]] and [[C#D^E]] 📅 2026-03-01 🆔 abc123")
         assert "[[A#B]]" in title
         assert "[[C#D^E]]" in title
         assert "B" not in tags
         assert "D" not in tags
         assert tags["due"] == "2026-03-01"
-        assert tags["id"] == "abc123"
         assert tags["id"] == "abc123"
 
 
@@ -434,3 +451,81 @@ class TestParseFile:
     def test_parse_sample_tasks_frontmatter(self):
         tree = parse_file(FIXTURES_DIR / "sample_tasks.md")
         assert len(tree.frontmatter_lines) > 0
+
+
+# ---------------------------------------------------------------------------
+# Dataview rendering
+# ---------------------------------------------------------------------------
+
+class TestRenderTagDataview:
+    def test_render_dataview_with_value(self):
+        assert render_tag("estimate", "4h", is_dataview=True) == "[estimate:: 4h]"
+
+    def test_render_dataview_without_value(self):
+        assert render_tag("myfield", "", is_dataview=True) == "[myfield::]"
+
+    def test_forced_dataview_from_hashtag(self):
+        """Tags in TAG_FORCE_DATAVIEW render as dataview even without is_dataview."""
+        for name in TAG_FORCE_DATAVIEW:
+            result = render_tag(name, "2h", is_dataview=False)
+            assert result == f"[{name}:: 2h]"
+
+    def test_emoji_tag_not_overridden_by_dataview(self):
+        """Emoji tags always render as emoji, even if is_dataview=True."""
+        assert render_tag("due", "2026-01-01", is_dataview=True).startswith("\U0001f4c5")
+
+    def test_render_tags_with_dataview_set(self):
+        tags = {"id": "abc123", "estimate": "4h", "stub": ""}
+        result = render_tags(tags, dataview_tags={"estimate"})
+        assert "[estimate:: 4h]" in result
+        assert "#stub" in result
+
+    def test_render_tags_forced_dataview_without_set(self):
+        """estimate renders as dataview even with empty dataview_tags set."""
+        tags = {"estimate": "2h"}
+        result = render_tags(tags)
+        assert result == "[estimate:: 2h]"
+
+
+class TestDataviewRoundTrip:
+    def test_round_trip_dataview_property(self):
+        content = "### Open\n\n- [ ] Task with dv 🆔 dv0001 [estimate:: 4h]\n"
+        tree1 = parse_content(content, Path("test.md"))
+        task = tree1.sections[0].tasks[0]
+        assert task.tags["estimate"] == "4h"
+        assert "estimate" in task.dataview_tags
+
+        with tempfile.NamedTemporaryFile(
+            suffix=".md", mode="w", delete=False, encoding="utf-8"
+        ) as f:
+            tmp_path = Path(f.name)
+
+        try:
+            write_file(tmp_path, tree1)
+            written = tmp_path.read_text(encoding="utf-8")
+            assert "[estimate:: 4h]" in written
+
+            tree2 = parse_file(tmp_path)
+            task2 = tree2.sections[0].tasks[0]
+            assert task2.tags["estimate"] == "4h"
+            assert "estimate" in task2.dataview_tags
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    def test_forced_dataview_from_hashtag_round_trip(self):
+        """#estimate:4h should be normalized to [estimate:: 4h] on write."""
+        content = "### Open\n\n- [ ] Task 🆔 dv0002 #estimate:4h\n"
+        tree = parse_content(content, Path("test.md"))
+
+        with tempfile.NamedTemporaryFile(
+            suffix=".md", mode="w", delete=False, encoding="utf-8"
+        ) as f:
+            tmp_path = Path(f.name)
+
+        try:
+            write_file(tmp_path, tree)
+            written = tmp_path.read_text(encoding="utf-8")
+            assert "[estimate:: 4h]" in written
+            assert "#estimate" not in written
+        finally:
+            tmp_path.unlink(missing_ok=True)
