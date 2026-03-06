@@ -2,3 +2,7 @@
 **/__pycache__/
 
 plugins/vault-mcp/logs/
+
+vault-mcp/.claude/settings.local.json
+
+vault-mcp/logs/
