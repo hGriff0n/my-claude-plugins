@@ -18,6 +18,7 @@ Core algorithm:
 import logging
 from collections import defaultdict
 from copy import deepcopy
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -97,7 +98,7 @@ def _collect_archivable_from_tree(task: dict) -> List[dict]:
 
 
 def collect_archivable(
-    tasks: List[dict], api_base: str
+    tasks: List[dict], api_base: str, dry_run: bool = False
 ) -> List[dict]:
     """
     Identify archivable tasks and reopen done parents with open children.
@@ -119,7 +120,8 @@ def collect_archivable(
         if _has_open_descendants(task):
             # Reopen this parent
             open_ids = _collect_open_child_ids(task)
-            reopen_parent(task, open_ids, api_base)
+            if not dry_run:
+                reopen_parent(task, open_ids, api_base)
             reopened.append(task["id"])
             # Recurse into children for individually archivable subtrees
             for child in task.get("children", []):
@@ -221,14 +223,9 @@ def build_archive_content(tasks: List[dict]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def get_daily_note_path(date_str: str) -> Path:
-    """Resolve the daily note file path for a given date via obsidian CLI."""
-    r = obsidian_cli("daily", f"date={date_str}", "info=path")
-    if r.returncode != 0:
-        raise RuntimeError(
-            f"Failed to get daily note path for {date_str}: {r.stderr.strip()}"
-        )
-    return Path(r.stdout.strip())
+def get_daily_note_path(vault_root: Path, date_str: str) -> Path:
+    dt = datetime.strptime(date_str, "%Y-%m-%d")
+    return vault_root / "areas" / "journal" / dt.strftime("%Y") / dt.strftime("%m %B") / f"{dt.strftime('%d')}.md"
 
 
 def append_to_daily_note(daily_path: Path, content: str) -> None:
@@ -239,39 +236,15 @@ def append_to_daily_note(daily_path: Path, content: str) -> None:
     section already exists, appends tasks at the end of that section.
     Otherwise, appends a new section at the end of the file.
     """
-    if not daily_path.exists():
-        daily_path.parent.mkdir(parents=True, exist_ok=True)
-        daily_path.write_text("", encoding="utf-8")
-
-    existing = daily_path.read_text(encoding="utf-8")
-    lines = existing.splitlines()
-
-    # Find existing "## Completed Tasks" section
-    section_idx = None
-    for i, line in enumerate(lines):
-        if line.strip() == "## Completed Tasks":
-            section_idx = i
-            break
-
-    if section_idx is not None:
-        # Find the end of the section (next ## heading or EOF)
-        insert_idx = len(lines)
-        for i in range(section_idx + 1, len(lines)):
-            if lines[i].startswith("## "):
-                insert_idx = i
-                break
-        # Insert content before the next section (or at EOF)
-        content_lines = content.splitlines()
-        lines[insert_idx:insert_idx] = content_lines
-    else:
-        # Append new section
-        if lines and lines[-1].strip():
-            lines.append("")
-        lines.append("## Completed Tasks")
-        lines.append("")
-        lines.extend(content.splitlines())
-
-    daily_path.write_text("\n".join(lines), encoding="utf-8")
+    r = obsidian_cli(
+        "create" if not daily_path.exists() else "append",
+        f"path={daily_path}",
+        f"content='## Completed Tasks\n\n{content}"
+    )
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"Error archiving to note: path={daily_path}, error={r.stderr.strip()}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -329,10 +302,9 @@ def remove_tasks_from_source(
 # Orchestrator
 # ---------------------------------------------------------------------------
 
-# TODO: Move to MCP?
-# TODO: Add functionality to fill-in missing metadata
 def archive_tasks(
-    cache: VaultCache, api_base: str = "http://localhost:9400"
+    cache: VaultCache, api_base: str = "http://localhost:9400",
+    dry_run: bool = False,
 ) -> dict:
     """
     Main archival orchestrator.
@@ -342,6 +314,9 @@ def archive_tasks(
     3. Groups by completion date, serializes, appends to daily notes
     4. Removes archived tasks from source files via cached tree
 
+    When dry_run is True, steps 3-4 are skipped and the return value
+    includes a ``tasks`` list describing what would be archived.
+
     Returns a summary dict with counts for logging.
     """
     # Step 1: Discover
@@ -349,28 +324,43 @@ def archive_tasks(
     log.info("Found %d done tasks", len(done_tasks))
 
     if not done_tasks:
-        return {"archived": 0, "reopened": 0, "daily_notes": 0}
+        return {"archived": 0, "reopened": 0, "daily_notes": 0, "dry_run": dry_run}
 
     # Step 2: Analyze archivability and reopen blocked parents
-    archivable = collect_archivable(done_tasks, api_base)
+    archivable = collect_archivable(done_tasks, api_base, dry_run=dry_run)
     log.info("Archivable tasks: %d", len(archivable))
 
     if not archivable:
-        return {"archived": 0, "reopened": 0, "daily_notes": 0}
+        return {"archived": 0, "reopened": 0, "daily_notes": 0, "dry_run": dry_run}
 
     # Step 3: Group by date
     by_date = group_by_date(archivable)
+    all_archived_ids = _collect_all_ids_flat(archivable)
 
+    if dry_run:
+        tasks_preview = [
+            {"id": t.get("id"), "title": t.get("title"),
+             "completed": t.get("tags", {}).get("completed")}
+            for t in archivable
+        ]
+        return {
+            "archived": len(all_archived_ids),
+            "daily_notes": len(by_date),
+            "dry_run": True,
+            "tasks": tasks_preview,
+        }
+
+    # TODO: File operations may fail. We should not delete tasks that were not archived
+    # because the file failed.
     # Step 4: Append to daily notes (before removing from source — crash safe)
     for date_str, tasks in by_date.items():
         content = build_archive_content(tasks)
-        daily_path = get_daily_note_path(date_str)
+        daily_path = get_daily_note_path(cache.vault_root, date_str)
         append_to_daily_note(daily_path, content)
         log.info("Archived %d tasks to daily note %s", len(tasks), daily_path)
 
     # Step 5: Remove from source files
     # Collect all archived task IDs and resolve their file paths from cache
-    all_archived_ids = _collect_all_ids_flat(archivable)
     archived_ids_by_file: Dict[Path, Set[str]] = defaultdict(set)
     for task_id in all_archived_ids:
         file_path = cache.get_task_file(task_id)
@@ -384,6 +374,7 @@ def archive_tasks(
     return {
         "archived": len(all_archived_ids),
         "daily_notes": len(by_date),
+        "dry_run": False,
     }
 
 

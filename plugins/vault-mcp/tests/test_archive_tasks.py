@@ -245,7 +245,7 @@ class TestBuildArchiveContent:
         )
         content = build_archive_content([task])
         assert "📅 2026-02-01" in content
-        assert "#estimate:2h" in content
+        assert "[[estimate::2h]]" in content
 
     def test_different_day_children_excluded(self):
         """Children completed on a different day should not be included."""
@@ -621,6 +621,55 @@ class TestEndToEnd:
         # Verify: done01 is NOT in source
         refreshed = parse_file(tasks_file)
         assert "done01" not in {t.id for t in refreshed.all_tasks()}
+
+    @patch("scripts.archive_tasks.fetch_done_tasks")
+    def test_dry_run_no_side_effects(self, mock_fetch, tmp_path):
+        """dry_run=True should report archivable tasks without modifying files."""
+        cache, vault = self._make_cache(tmp_path)
+
+        mock_fetch.return_value = [
+            _make_task("Completed Jan 15", "done01", completed="2026-01-15"),
+            _make_task("Completed Jan 16", "done02", completed="2026-01-16"),
+        ]
+
+        from scripts.archive_tasks import archive_tasks
+        result = archive_tasks(cache, api_base="http://test", dry_run=True)
+
+        # Should report what would be archived
+        assert result["dry_run"] is True
+        assert result["archived"] >= 2
+        assert result["daily_notes"] == 2
+        assert "tasks" in result
+        assert len(result["tasks"]) == 2
+        task_ids = {t["id"] for t in result["tasks"]}
+        assert "done01" in task_ids
+        assert "done02" in task_ids
+
+        # Source files must be untouched
+        tasks_file = vault / "TASKS.md"
+        tree = parse_file(tasks_file)
+        remaining_ids = {t.id for t in tree.all_tasks()}
+        assert "done01" in remaining_ids
+        assert "done02" in remaining_ids
+
+    @patch("scripts.archive_tasks.fetch_done_tasks")
+    @patch("scripts.archive_tasks.reopen_parent")
+    def test_dry_run_skips_reopen(self, mock_reopen, mock_fetch, tmp_path):
+        """dry_run=True should not call reopen_parent."""
+        cache, vault = self._make_cache(tmp_path)
+
+        mock_fetch.return_value = [
+            _make_task("Done parent with open child", "done03", children=[
+                _make_task("Open child", "open03", status="open", completed=None),
+                _make_task("Done child", "done04"),
+            ]),
+        ]
+
+        from scripts.archive_tasks import archive_tasks
+        result = archive_tasks(cache, api_base="http://test", dry_run=True)
+
+        assert result["dry_run"] is True
+        mock_reopen.assert_not_called()
 
     @patch("scripts.archive_tasks.get_daily_note_path")
     @patch("scripts.archive_tasks.fetch_done_tasks")

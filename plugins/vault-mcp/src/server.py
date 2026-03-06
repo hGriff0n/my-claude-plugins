@@ -108,19 +108,23 @@ def main() -> None:
     mcp = FastMCP.from_fastapi(app=rest_app)
 
     @mcp.tool("task_archive")
-    def task_archive() -> dict:
+    def task_archive(dry_run: bool = False) -> dict:
         """Archive completed tasks to daily notes.
 
         Finds all completed tasks, groups them by completion date, writes them
         to the appropriate daily note files, and removes them from the source
         task files. Done parents with open children are reopened with a
         blocking reference to their open subtasks.
+
+        Args:
+            dry_run: If True, report what tasks would be archived without
+                     actually moving or modifying any files.
         """
         from scripts.archive_tasks import archive_tasks
 
         api_port = int(os.environ.get("API_PORT", "9400"))
         api_base = f"http://localhost:{api_port}"
-        return archive_tasks(cache, api_base=api_base)
+        return archive_tasks(cache, api_base=api_base, dry_run=dry_run)
 
     mcp_asgi = mcp.http_app(transport="streamable-http", path="/mcp")
 

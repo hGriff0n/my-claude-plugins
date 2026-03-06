@@ -29,7 +29,7 @@ EMOJI_TO_TAG: Dict[str, str] = {v: k for k, v in TAG_TO_EMOJI.items()}
 
 # Tags that are always rendered as dataview properties regardless of how they
 # were originally written. Dataview properties render as `[<tag>::<value>]`.
-TAG_FORCE_DATAVIEW: Set[str] = {"estimate", "actual"}
+TAG_FORCE_DATAVIEW: Set[str] = {"estimate", "actual", "effort"}
 
 
 def render_tag(name: str, value: str, is_dataview: bool = False) -> str:
