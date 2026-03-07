@@ -145,13 +145,30 @@ def main() -> None:
 
     api_port = int(os.environ.get("API_PORT", "9400"))
     log.info("Starting vault-mcp server on port %d", api_port)
+
+    config = uvicorn.Config(app, port=api_port, log_level="info")
+    server = uvicorn.Server(config)
+
+    global _server
+    _server = server
+
     try:
-        uvicorn.run(app, port=api_port, log_level="info")
+        server.run()
     except Exception as e:
-        log.error("Execption: %s", e)
+        log.error("Exception: %s", e)
     finally:
+        _server = None
         watcher.stop()
         cache.stop_worker()
+
+
+_server: uvicorn.Server | None = None
+
+
+def shutdown() -> None:
+    """Signal the uvicorn server to exit gracefully."""
+    if _server is not None:
+        _server.should_exit = True
 
 
 if __name__ == "__main__":
