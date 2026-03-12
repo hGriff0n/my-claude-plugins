@@ -310,7 +310,24 @@ class TestNotes:
         tree = parse_content(content)
         task = tree.sections[0].tasks[0]
         assert len(task.notes) == 1
-        assert "This is a note" in task.notes[0]
+        assert "This is a note" in task.notes[0][1]
+
+    def test_nested_notes_preserve_indentation(self):
+        content = "### Open\n\n- [ ] Fix Task 🆔 7rxb3b\n\t- Specifically nested indentation\n\t\t- Like this (gets flattened)\n"
+        tree = parse_content(content)
+        task = tree.sections[0].tasks[0]
+        assert len(task.notes) == 2
+        assert task.notes[0] == (1, "Specifically nested indentation")
+        assert task.notes[1] == (2, "Like this (gets flattened)")
+
+    def test_nested_notes_round_trip(self):
+        content = "### Open\n\n- [ ] Fix Task 🆔 7rxb3b\n\t- Specifically nested indentation\n\t\t- Like this (gets flattened)\n"
+        tree = parse_content(content)
+        lines = []
+        from parsers.task_parser import _serialize_task
+        lines = _serialize_task(tree.sections[0].tasks[0], indent_level=0)
+        assert lines[1] == "    - Specifically nested indentation"
+        assert lines[2] == "        - Like this (gets flattened)"
 
 
 # ---------------------------------------------------------------------------

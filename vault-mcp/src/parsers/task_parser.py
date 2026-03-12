@@ -332,9 +332,10 @@ def parse_content(content: str, file_path: Optional[Path] = None) -> TaskTree:
             indent_str = line[: line.find("-")]
             note_indent = _indent_level(indent_str)
             if note_indent > current_task.indent_level:
-                # Store clean content — strip the leading "- " prefix
+                # Store (relative_indent, text) — relative_indent 1 = directly under task
                 note_text = stripped[2:] if stripped.startswith("- ") else stripped[1:].lstrip()
-                current_task.notes.append(note_text)
+                relative = note_indent - current_task.indent_level
+                current_task.notes.append((relative, note_text))
 
     return TaskTree(
         file_path=file_path or Path(""),
@@ -351,19 +352,19 @@ def parse_file(file_path: Path) -> TaskTree:
 def _serialize_task(task: Task, indent_level: int = 0) -> List[str]:
     """Recursively serialize a task and its children to markdown lines."""
     indent = "    " * indent_level
-    checkbox = {"done": "[x]", "in-progress": "[/]"}.get(task.status, "[ ]")
+    checkbox = next((k for k, v in _CHECKBOX_STATUS.items() if v == task.status), ' ')
 
     tag_str = render_tags(task.tags, task.dataview_tags)
     if tag_str:
-        task_line = f"{indent}- {checkbox} {task.title} {tag_str}"
+        task_line = f"{indent}- [{checkbox}] {task.title} {tag_str}"
     else:
-        task_line = f"{indent}- {checkbox} {task.title}"
+        task_line = f"{indent}- [{checkbox}] {task.title}"
 
     lines = [task_line]
 
-    note_indent = "    " * (indent_level + 1)
-    for note in task.notes:
-        lines.append(f"{note_indent}- {note}")
+    for rel, note_text in task.notes:
+        note_indent = "    " * (indent_level + rel)
+        lines.append(f"{note_indent}- {note_text}")
 
     for child in task.children:
         lines.extend(_serialize_task(child, indent_level + 1))

@@ -227,8 +227,8 @@ class TestQueryTasks:
         assert entry is not None
         task, _ = entry
         assert len(task.notes) == 2
-        assert task.notes[0] == "This note should be clean"
-        assert task.notes[1] == "Second note line"
+        assert task.notes[0][1] == "This note should be clean"
+        assert task.notes[1][1] == "Second note line"
 
 
 # ---------------------------------------------------------------------------

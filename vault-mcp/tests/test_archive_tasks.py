@@ -470,7 +470,7 @@ class TestHelpers:
         assert task.id == "t1"
         assert task.status == "done"
         assert len(task.children) == 1
-        assert task.notes == ["A note"]
+        assert task.notes == [(1, "A note")]
 
 
 # ---------------------------------------------------------------------------

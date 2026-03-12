@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Set
+from typing import Dict, List, Literal, Optional, Set, Tuple
 
 
 @dataclass
@@ -28,7 +28,7 @@ class Task:
     status: Literal["open", "in-progress", "done"] = "open"
     tags: Dict[str, str] = field(default_factory=dict)
     dataview_tags: Set[str] = field(default_factory=set)
-    notes: List[str] = field(default_factory=list)
+    notes: List[Tuple[int, str]] = field(default_factory=list)
     children: List[Task] = field(default_factory=list)
     indent_level: int = 0
     line_number: int = 0

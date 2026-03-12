@@ -179,7 +179,7 @@ def _dict_to_task(d: dict) -> Task:
         id=d.get("id"),
         status=d["status"],
         tags=dict(d.get("tags", {})),
-        notes=list(d.get("notes", [])),
+        notes=[(n[0], n[1]) if isinstance(n, (list, tuple)) else (1, n) for n in d.get("notes", [])],
         children=children,
         indent_level=d.get("indent_level", 0),
     )
@@ -239,7 +239,7 @@ def append_to_daily_note(daily_path: Path, content: str) -> None:
     r = obsidian_cli(
         "create" if not daily_path.exists() else "append",
         f"path={daily_path}",
-        f"content='## Completed Tasks\n\n{content}"
+        f"content=## Completed Tasks\n\n{content}"
     )
     if r.returncode != 0:
         raise RuntimeError(
@@ -271,8 +271,8 @@ def _filter_tree_tasks(tasks: List[Task], archived_ids: Set[str]) -> List[Task]:
 def _add_reopen_note(task: Task) -> None:
     """Add a reopen note to a task if not already present."""
     reopen_note = "**Reopened due to open child tasks**"
-    if reopen_note not in task.notes:
-        task.notes.append(reopen_note)
+    if not any(text == reopen_note for _, text in task.notes):
+        task.notes.append((1, reopen_note))
 
 
 def remove_tasks_from_source(
@@ -356,7 +356,7 @@ def archive_tasks(
     for date_str, tasks in by_date.items():
         content = build_archive_content(tasks)
         daily_path = get_daily_note_path(cache.vault_root, date_str)
-        append_to_daily_note(daily_path, content)
+        append_to_daily_note(daily_path.relative_to(cache.vault_root), content)
         log.info("Archived %d tasks to daily note %s", len(tasks), daily_path)
 
     # Step 5: Remove from source files

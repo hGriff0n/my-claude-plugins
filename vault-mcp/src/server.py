@@ -34,7 +34,7 @@ if sys.stderr is None:
 if sys.stdout is None:
     sys.stdout = open(os.devnull, "w")
 
-_log_dir = Path(r"C:\\Users\\ghoop\\Desktop\\claude-plugins\\my-claude-plugins\\plugins\\vault-mcp\\logs")
+_log_dir = Path(__file__).resolve().parent.parent / "logs"
 _log_dir.mkdir(exist_ok=True)
 
 _log_file = _log_dir / f"server_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.log"
