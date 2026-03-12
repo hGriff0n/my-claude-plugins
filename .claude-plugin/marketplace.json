@@ -25,6 +25,10 @@
       "source": "./plugins/allmystuff"
     },
     {
+      "name": "myvault",
+      "source": "./plugins/other"
+    },
+    {
       "name": "daily",
       "source": {
         "source": "url",
