@@ -15,6 +15,7 @@ import logging
 import queue
 import sqlite3
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
@@ -56,6 +57,11 @@ CREATE TABLE IF NOT EXISTS tasks (
 _CREATE_TASKS_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_tasks_status_effort ON tasks (status, effort_name);
 """
+
+# Minimum age (seconds) a file must have since last modification before the
+# cache is allowed to write back to it (e.g. auto-assigning task IDs).
+# Reads/cache refreshes are unaffected.
+_WRITE_COOLDOWN_SECS = 3600  # 1 hour
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +167,7 @@ class VaultCache:
         self._update_queue: "queue.Queue[Optional[Path]]" = queue.Queue()
         self._worker_thread: Optional[threading.Thread] = None
         self._last_full_scan: Optional[datetime] = None
+        self._deferred_writes: Set[Path] = set()
 
     # ------------------------------------------------------------------
     # Initialisation
@@ -272,10 +279,22 @@ class VaultCache:
                 existing_ids.add(new_id)
                 needs_write = True
 
-        # Write back to disk if we assigned any new IDs
+        # Write back to disk if we assigned any new IDs, but only if the
+        # file hasn't been modified recently (avoids clobbering active edits).
+        # Reads/cache refreshes are unaffected — tasks without IDs are still
+        # indexed in-memory with their generated IDs.
         if needs_write:
-            write_file(path, cached.tree)
-            cached.mtime = path.stat().st_mtime
+            file_age = time.time() - cached.mtime
+            if file_age >= _WRITE_COOLDOWN_SECS:
+                write_file(path, cached.tree)
+                cached.mtime = path.stat().st_mtime
+                self._deferred_writes.discard(path)
+            else:
+                self._deferred_writes.add(path)
+                log.debug(
+                    "Deferring ID write-back for %s (modified %.0fs ago, need %ds)",
+                    path, file_age, _WRITE_COOLDOWN_SECS,
+                )
 
         # Store new
         self._files[path] = cached
@@ -357,6 +376,31 @@ class VaultCache:
                     self._tasks_by_id.pop(task.id, None)
             self._db.execute("DELETE FROM tasks WHERE file_path = ?", (str(path),))
             self._db.commit()
+
+    def flush_deferred_writes(self) -> None:
+        """
+        Write back ID assignments for files whose cooldown has expired.
+
+        Called periodically by the watcher. Only writes to files that have
+        been unmodified for at least _WRITE_COOLDOWN_SECS.
+        """
+        if not self._deferred_writes:
+            return
+        with self._lock:
+            flushed = []
+            for path in list(self._deferred_writes):
+                cached = self._files.get(path)
+                if not cached:
+                    flushed.append(path)
+                    continue
+                file_age = time.time() - cached.mtime
+                if file_age >= _WRITE_COOLDOWN_SECS:
+                    log.info("Flushing deferred ID write-back for %s", path)
+                    write_file(path, cached.tree)
+                    cached.mtime = path.stat().st_mtime
+                    flushed.append(path)
+            for path in flushed:
+                self._deferred_writes.discard(path)
 
     def refresh_efforts(self) -> None:
         """Re-scan the efforts directory and update the effort map."""

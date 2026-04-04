@@ -98,7 +98,6 @@ def main() -> None:
     cache.start_worker()
 
     # Start file system watcher
-
     watcher = VaultWatcher(cache, vault_root, exclude_dirs)
     watcher.start()
 

@@ -127,6 +127,9 @@ class VaultWatcher:
             self._cache.enqueue_effort_scan()
             self._efforts_mtime = current_efforts_mtime
 
+        # Flush any deferred writes whose cooldown has expired
+        self._cache.flush_deferred_writes()
+
     def _snapshot_task_files(self) -> Dict[Path, float]:
         """Walk the vault and return {path: mtime} for all task files."""
         snapshot: Dict[Path, float] = {}
