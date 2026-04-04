@@ -223,27 +223,43 @@ def build_archive_content(tasks: List[dict]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def get_daily_note_path(vault_root: Path, date_str: str) -> Path:
+def get_daily_note_path(date_str: str) -> Path:
+    """Return the vault-relative path for a daily note."""
     dt = datetime.strptime(date_str, "%Y-%m-%d")
-    return vault_root / "areas" / "journal" / dt.strftime("%Y") / dt.strftime("%m %B") / f"{dt.strftime('%d')}.md"
+    return Path("areas") / "journal" / dt.strftime("%Y") / dt.strftime("%m %B") / f"{dt.strftime('%d')}.md"
 
 
-def append_to_daily_note(daily_path: Path, content: str) -> None:
+def append_to_daily_note(
+    vault_root: Path, daily_rel_path: Path, content: str
+) -> None:
     """
     Append archived task content to a daily note.
 
-    If the file doesn't exist, creates it. If a '## Completed Tasks'
-    section already exists, appends tasks at the end of that section.
-    Otherwise, appends a new section at the end of the file.
+    If the file doesn't exist, creates it from the daily note template.
+    Appends a '## Completed Tasks' section with the archived content.
+
+    Args:
+        vault_root: Absolute path to the vault root (for existence checks)
+        daily_rel_path: Vault-relative path to the daily note
+        content: Serialized task content to append
     """
-    r = obsidian_cli(
-        "create" if not daily_path.exists() else "append",
-        f"path={daily_path}",
-        f"content=## Completed Tasks\n\n{content}"
-    )
+    absolute_path = vault_root / daily_rel_path
+    if absolute_path.exists():
+        r = obsidian_cli(
+            "append",
+            f"path={daily_rel_path}",
+            f"content=## Completed Tasks\n\n{content}",
+        )
+    else:
+        r = obsidian_cli(
+            "create",
+            "template=daily",
+            f"path={daily_rel_path}",
+            f"content=## Completed Tasks\n\n{content}",
+        )
     if r.returncode != 0:
         raise RuntimeError(
-            f"Error archiving to note: path={daily_path}, error={r.stderr.strip()}"
+            f"Error archiving to note: path={daily_rel_path}, error={r.stderr.strip()}"
         )
 
 
@@ -355,9 +371,9 @@ def archive_tasks(
     # Step 4: Append to daily notes (before removing from source — crash safe)
     for date_str, tasks in by_date.items():
         content = build_archive_content(tasks)
-        daily_path = get_daily_note_path(cache.vault_root, date_str)
-        append_to_daily_note(daily_path.relative_to(cache.vault_root), content)
-        log.info("Archived %d tasks to daily note %s", len(tasks), daily_path)
+        daily_rel = get_daily_note_path(date_str)
+        append_to_daily_note(cache.vault_root, daily_rel, content)
+        log.info("Archived %d tasks to daily note %s", len(tasks), daily_rel)
 
     # Step 5: Remove from source files
     # Collect all archived task IDs and resolve their file paths from cache
