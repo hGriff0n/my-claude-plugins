@@ -248,14 +248,14 @@ def append_to_daily_note(
         r = obsidian_cli(
             "append",
             f"path={daily_rel_path.as_posix()}",
-            f"content=\"## Completed Tasks\n\n{content}\"",
+            f"content=## Completed Tasks\n\n{content}",
         )
     else:
         r = obsidian_cli(
             "create",
             "template=daily",
             f"path={daily_rel_path.as_posix()}",
-            f"content=\"## Completed Tasks\n\n{content}\"",
+            f"content=## Completed Tasks\n\n{content}",
         )
     if r.returncode != 0:
         raise RuntimeError(
