@@ -168,6 +168,7 @@ def shutdown() -> None:
     """Signal the uvicorn server to exit gracefully."""
     if _server is not None:
         _server.should_exit = True
+    log.info('Received shutdown signal')
 
 
 if __name__ == "__main__":
