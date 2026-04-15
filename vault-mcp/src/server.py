@@ -13,6 +13,8 @@ Startup sequence:
 
 import logging
 import logging.handlers
+import threading
+import time
 from datetime import datetime
 import os
 import sys
@@ -23,11 +25,13 @@ from fastapi import FastAPI
 from fastmcp import FastMCP
 from starlette.middleware.cors import CORSMiddleware
 
-from api.deps import set_cache
+from api.deps import set_cache, get_cache
 from api.routes import router
 from cache.vault_cache import VaultCache
 from utils.obsidian import obsidian_cli
 from watcher.vault_watcher import VaultWatcher
+
+VAULT_INIT_RETRY_SECONDS = 30
 
 if sys.stderr is None:
     sys.stderr = open(os.devnull, "w")
@@ -71,38 +75,79 @@ def create_app() -> FastAPI:
     return app
 
 
-def main() -> None:
+_vault_state: dict = {"cache": None, "watcher": None}
+_vault_state_lock = threading.Lock()
+
+
+def _probe_vault_root() -> Path | None:
+    """Ask Obsidian for the active vault path. Returns None if unavailable."""
     r = obsidian_cli("vault", "info=path")
     if r.returncode != 0:
-        log.error("obsidian CLI not available or no vault configured: %s", r.stderr.strip())
-        sys.exit(1)
-
+        log.warning("obsidian CLI not available or no vault configured: %s", r.stderr.strip())
+        return None
     vault_root = Path(r.stdout.strip())
     if not vault_root.is_dir():
-        log.error("Vault path does not exist or is not a directory: %s", vault_root)
-        sys.exit(1)
+        log.warning("Vault path does not exist or is not a directory: %s", vault_root)
+        return None
+    return vault_root
 
+
+def _initialize_vault(exclude_dirs: set[str]) -> bool:
+    """Attempt full vault initialization. Returns True on success."""
+    with _vault_state_lock:
+        if _vault_state["cache"] is not None:
+            return True
+
+        vault_root = _probe_vault_root()
+        if vault_root is None:
+            return False
+
+        log.info("Vault root: %s", vault_root)
+        log.info("Excluded dirs: %s", exclude_dirs)
+
+        cache = VaultCache()
+        log.info("Scanning vault...")
+        cache.initialize(vault_root, exclude_dirs)
+        log.info("Vault scan complete")
+
+        cache.start_worker()
+
+        watcher = VaultWatcher(cache, vault_root, exclude_dirs)
+        watcher.start()
+
+        set_cache(cache)
+        _vault_state["cache"] = cache
+        _vault_state["watcher"] = watcher
+        log.info("Vault initialization complete")
+        return True
+
+
+def _vault_init_retry_loop(exclude_dirs: set[str]) -> None:
+    """Background retry until Obsidian becomes available."""
+    while True:
+        if _vault_state["cache"] is not None:
+            return
+        if _server is None or _server.should_exit:
+            return
+        time.sleep(VAULT_INIT_RETRY_SECONDS)
+        if _server is None or _server.should_exit:
+            return
+        log.info("Retrying vault initialization...")
+        if _initialize_vault(exclude_dirs):
+            return
+
+
+def main() -> None:
     exclude_raw = os.environ.get("EXCLUDE_DIRS", ".git,.obsidian,node_modules,.trash")
     exclude_dirs = _parse_exclude_dirs(exclude_raw)
 
-    log.info("Vault root: %s", vault_root)
-    log.info("Excluded dirs: %s", exclude_dirs)
+    initialized = _initialize_vault(exclude_dirs)
+    if not initialized:
+        log.warning(
+            "Starting server in degraded mode. Vault-dependent endpoints will "
+            "return 503 until Obsidian is running."
+        )
 
-    # Initialize cache and perform full vault scan
-    cache = VaultCache()
-    log.info("Scanning vault...")
-    cache.initialize(vault_root, exclude_dirs)
-    log.info("Vault scan complete")
-
-    # Start background worker that drains the update queue
-    cache.start_worker()
-
-    # Start file system watcher
-    watcher = VaultWatcher(cache, vault_root, exclude_dirs)
-    watcher.start()
-
-    # Wire cache into the dependency provider, then build REST and MCP sub-apps
-    set_cache(cache)
     rest_app = create_app()
     mcp = FastMCP.from_fastapi(app=rest_app)
 
@@ -121,6 +166,7 @@ def main() -> None:
         """
         from scripts.archive_tasks import archive_tasks
 
+        cache = get_cache()
         api_port = int(os.environ.get("API_PORT", "9400"))
         api_base = f"http://localhost:{api_port}"
         return archive_tasks(cache, api_base=api_base, dry_run=dry_run)
@@ -151,14 +197,27 @@ def main() -> None:
     global _server
     _server = server
 
+    if not initialized:
+        retry_thread = threading.Thread(
+            target=_vault_init_retry_loop,
+            args=(exclude_dirs,),
+            name="vault-init-retry",
+            daemon=True,
+        )
+        retry_thread.start()
+
     try:
         server.run()
     except Exception as e:
         log.error("Exception: %s", e)
     finally:
         _server = None
-        watcher.stop()
-        cache.stop_worker()
+        watcher = _vault_state["watcher"]
+        cache = _vault_state["cache"]
+        if watcher is not None:
+            watcher.stop()
+        if cache is not None:
+            cache.stop_worker()
 
 
 _server: uvicorn.Server | None = None
