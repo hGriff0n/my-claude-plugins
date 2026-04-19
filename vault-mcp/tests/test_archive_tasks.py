@@ -23,7 +23,6 @@ from cache.vault_cache import VaultCache
 from parsers.task_parser import parse_file
 from scripts.archive_tasks import (
     _collect_all_ids_flat,
-    _filter_same_day_children,
     _filter_tree_tasks,
     _has_open_descendants,
     append_to_daily_note,
@@ -33,6 +32,19 @@ from scripts.archive_tasks import (
     remove_tasks_from_source,
     _dict_to_task,
 )
+
+
+def _parent_of_from_tree(tasks: list) -> dict:
+    """Derive a {id: parent_id} map by walking a task-dict tree."""
+    parent_of = {}
+    def walk(t, pid):
+        if t.get("id"):
+            parent_of[t["id"]] = pid
+        for c in t.get("children", []):
+            walk(c, t.get("id"))
+    for t in tasks:
+        walk(t, None)
+    return parent_of
 
 
 # ---------------------------------------------------------------------------
@@ -118,19 +130,22 @@ def _make_vault(tmp_path: Path) -> Path:
 
 
 class TestCollectArchivable:
-    def test_fully_done_tree_is_archivable(self):
+    def test_fully_done_tree_both_archivable(self):
+        """Every done-with-date task is individually archivable."""
         parent = _make_task("Parent", "p1", children=[
             _make_task("Child", "c1"),
         ])
-        result = collect_archivable([parent], api_base="http://unused")
-        assert len(result) == 1
-        assert result[0]["id"] == "p1"
+        archivable, parent_of = collect_archivable([parent], api_base="http://unused")
+        ids = {t["id"] for t in archivable}
+        assert ids == {"p1", "c1"}
+        assert parent_of == {"p1": None, "c1": "p1"}
 
     def test_done_leaf_archivable(self):
         task = _make_task("Leaf", "l1")
-        result = collect_archivable([task], api_base="http://unused")
-        assert len(result) == 1
-        assert result[0]["id"] == "l1"
+        archivable, parent_of = collect_archivable([task], api_base="http://unused")
+        assert len(archivable) == 1
+        assert archivable[0]["id"] == "l1"
+        assert parent_of == {"l1": None}
 
     @patch("scripts.archive_tasks.reopen_parent")
     def test_done_parent_with_open_child_triggers_reopen(self, mock_reopen):
@@ -138,27 +153,27 @@ class TestCollectArchivable:
             _make_task("Open child", "c1", status="open", completed=None),
             _make_task("Done child", "c2"),
         ])
-        result = collect_archivable([parent], api_base="http://test")
-        # Parent should not be in archivable
-        assert "p1" not in {t["id"] for t in result}
-        # Done child should be archivable
-        assert "c2" in {t["id"] for t in result}
-        # Reopen should have been called
+        archivable, _ = collect_archivable([parent], api_base="http://test")
+        ids = {t["id"] for t in archivable}
+        # Parent is reopened → not archivable
+        assert "p1" not in ids
+        # Done child is still archivable
+        assert "c2" in ids
         mock_reopen.assert_called_once()
 
     def test_open_task_excluded(self):
         task = _make_task("Open", "o1", status="open", completed=None)
-        result = collect_archivable([task], api_base="http://unused")
-        assert len(result) == 0
+        archivable, _ = collect_archivable([task], api_base="http://unused")
+        assert len(archivable) == 0
 
     def test_done_without_completed_tag_excluded(self):
         task = _make_task("Done no date", "d1", completed=None)
-        result = collect_archivable([task], api_base="http://unused")
-        assert len(result) == 0
+        archivable, _ = collect_archivable([task], api_base="http://unused")
+        assert len(archivable) == 0
 
     @patch("scripts.archive_tasks.reopen_parent")
     def test_deeply_nested_partial_done(self, mock_reopen):
-        """Only the fully-done subtrees should be archivable."""
+        """Done parents with open descendants are reopened; done leaves archive individually."""
         task = _make_task("Root", "r1", children=[
             _make_task("Done branch", "d1", children=[
                 _make_task("Done leaf", "d2"),
@@ -167,14 +182,24 @@ class TestCollectArchivable:
                 _make_task("Open leaf", "o1", status="open", completed=None),
             ]),
         ])
-        result = collect_archivable([task], api_base="http://test")
-        ids = {t["id"] for t in result}
-        # Root should be reopened (has open descendants via m1/o1)
+        archivable, _ = collect_archivable([task], api_base="http://test")
+        ids = {t["id"] for t in archivable}
+        # Root has open descendants → reopened
         assert "r1" not in ids
-        # d1+d2 is fully done subtree → archivable
+        # d1 and d2 are fully-done branch → both archivable individually
         assert "d1" in ids
-        # m1 has open child → should be reopened, not archived
+        assert "d2" in ids
+        # m1 has open child → reopened, not archived
         assert "m1" not in ids
+
+    def test_done_child_of_open_parent_archivable(self):
+        """A done child under an open parent is individually archivable."""
+        parent = _make_task("Open parent", "op1", status="open", completed=None,
+                            children=[_make_task("Done child", "dc1")])
+        archivable, parent_of = collect_archivable([parent], api_base="http://unused")
+        ids = {t["id"] for t in archivable}
+        assert ids == {"dc1"}
+        assert parent_of["dc1"] == "op1"
 
 
 # ---------------------------------------------------------------------------
@@ -212,30 +237,30 @@ class TestGroupByDate:
 class TestBuildArchiveContent:
     def test_root_task_at_indent_zero(self):
         task = _make_task("Root task", "r1", indent_level=0)
-        content = build_archive_content([task])
+        content = build_archive_content([task], {"r1": None})
         assert content.startswith("- [x] Root task")
 
     def test_subtask_normalized_to_indent_zero(self):
         """A subtask at indent 3 should be rendered at indent 0."""
         task = _make_task("Deep task", "d1", indent_level=3)
-        content = build_archive_content([task])
+        content = build_archive_content([task], {"d1": None})
         lines = content.splitlines()
         assert lines[0].startswith("- [x] Deep task")
         assert not lines[0].startswith("    ")
 
-    def test_parent_with_children_normalized(self):
-        """Parent at indent 0, child at indent 1."""
-        parent = _make_task("Parent", "p1", indent_level=2, children=[
-            _make_task("Child", "c1", indent_level=3),
-        ])
-        content = build_archive_content([parent])
+    def test_parent_with_same_day_child_nested(self):
+        """Parent at indent 0, same-day child nested at indent 1."""
+        parent = _make_task("Parent", "p1", completed="2026-01-15", indent_level=2)
+        child = _make_task("Child", "c1", completed="2026-01-15", indent_level=3)
+        parent_of = {"p1": None, "c1": "p1"}
+        content = build_archive_content([parent, child], parent_of)
         lines = content.splitlines()
         assert lines[0].startswith("- [x] Parent")
         assert lines[1].startswith("    - [x] Child")
 
     def test_includes_notes(self):
         task = _make_task("With notes", "n1", notes=["A note here"])
-        content = build_archive_content([task])
+        content = build_archive_content([task], {"n1": None})
         assert "A note here" in content
 
     def test_tags_preserved(self):
@@ -243,19 +268,31 @@ class TestBuildArchiveContent:
             "Tagged", "t1",
             extra_tags={"due": "2026-02-01", "estimate": "2h"},
         )
-        content = build_archive_content([task])
+        content = build_archive_content([task], {"t1": None})
         assert "📅 2026-02-01" in content
         assert "[[estimate::2h]]" in content
 
-    def test_different_day_children_excluded(self):
-        """Children completed on a different day should not be included."""
-        parent = _make_task("Parent", "p1", completed="2026-01-15", children=[
-            _make_task("Same day", "c1", completed="2026-01-15"),
-            _make_task("Different day", "c2", completed="2026-01-16"),
-        ])
-        content = build_archive_content([parent])
-        assert "Same day" in content
-        assert "Different day" not in content
+    def test_different_day_parent_not_nested(self):
+        """A task whose parent is NOT in today's group renders as root."""
+        # Parent completed 2026-01-15, child completed 2026-01-16.
+        # Rendering only the Jan 16 group: child should appear as root
+        # (its parent is archived on a different day).
+        child = _make_task("Diff day child", "c1", completed="2026-01-16")
+        parent_of = {"p1": None, "c1": "p1"}
+        content = build_archive_content([child], parent_of)
+        lines = content.splitlines()
+        assert lines[0].startswith("- [x] Diff day child")
+        assert not lines[0].startswith("    ")
+
+    def test_same_day_parent_child_together(self):
+        """Parent + same-day child render as nested group."""
+        parent = _make_task("Parent", "p1", completed="2026-01-15")
+        child = _make_task("Same day", "c1", completed="2026-01-15")
+        parent_of = {"p1": None, "c1": "p1"}
+        content = build_archive_content([parent, child], parent_of)
+        lines = content.splitlines()
+        assert lines[0].startswith("- [x] Parent")
+        assert lines[1].startswith("    - [x] Same day")
 
 
 # ---------------------------------------------------------------------------
@@ -405,16 +442,17 @@ class TestIndentNormalization:
     def test_deep_subtask_becomes_root(self):
         """A task at indent level 5 should serialize at indent 0."""
         task = _make_task("Deep task", "d1", indent_level=5)
-        content = build_archive_content([task])
+        content = build_archive_content([task], {"d1": None})
         first_line = content.splitlines()[0]
         assert first_line == first_line.lstrip()  # No leading whitespace
 
     def test_nested_children_relative_indent(self):
-        """Parent→child→grandchild should be 0→1→2 regardless of original indent."""
-        grandchild = _make_task("Grandchild", "gc1", indent_level=4)
-        child = _make_task("Child", "c1", indent_level=3, children=[grandchild])
-        parent = _make_task("Parent", "p1", indent_level=2, children=[child])
-        content = build_archive_content([parent])
+        """Parent→child→grandchild (all same date) should render as 0→1→2."""
+        parent = _make_task("Parent", "p1", completed="2026-01-15", indent_level=2)
+        child = _make_task("Child", "c1", completed="2026-01-15", indent_level=3)
+        grandchild = _make_task("Grandchild", "gc1", completed="2026-01-15", indent_level=4)
+        parent_of = {"p1": None, "c1": "p1", "gc1": "c1"}
+        content = build_archive_content([parent, child, grandchild], parent_of)
         lines = content.splitlines()
         assert not lines[0].startswith("    ")  # Parent at 0
         assert lines[1].startswith("    ") and not lines[1].startswith("        ")  # Child at 1
@@ -450,16 +488,6 @@ class TestHelpers:
         ]
         ids = _collect_all_ids_flat(tasks)
         assert ids == {"a1", "b1", "c1", "d1"}
-
-    def test_filter_same_day_children(self):
-        task = _dict_to_task(_make_task("Parent", "p1", completed="2026-01-15", children=[
-            _make_task("Same day", "c1", completed="2026-01-15"),
-            _make_task("Diff day", "c2", completed="2026-01-16"),
-        ]))
-        filtered = _filter_same_day_children(task, "2026-01-15")
-        child_ids = {c.id for c in filtered.children}
-        assert "c1" in child_ids
-        assert "c2" not in child_ids
 
     def test_dict_to_task_round_trip(self):
         d = _make_task("Test", "t1", notes=["A note"], children=[
@@ -605,12 +633,13 @@ class TestEndToEnd:
         archivable = [self._task_to_api_dict(t)
                       for t in original_tree.all_tasks()
                       if t.id == "done01"]
+        parent_of = {"done01": None}
 
         from scripts.archive_tasks import build_archive_content, append_to_daily_note
 
-        content = build_archive_content(archivable)
+        content = build_archive_content(archivable, parent_of)
         daily_path = daily_dir / "2026-01-15.md"
-        append_to_daily_note(daily_path, content)
+        append_to_daily_note(daily_path.parent, Path(daily_path.name), content)
 
         remove_tasks_from_source(cache, tasks_file, {"done01"})
 
