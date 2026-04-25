@@ -30,7 +30,7 @@ import httpx
 from cache.vault_cache import VaultCache
 from models.task import Task
 from parsers.task_parser import _serialize_task, write_file
-from utils.obsidian import obsidian_cli
+from utils.obsidian import CONTENT_CHUNK_BYTES, obsidian_cli, split_on_line_boundaries
 
 log = logging.getLogger(__name__)
 
@@ -232,26 +232,33 @@ def append_to_daily_note(
 
     If the file doesn't exist, creates it from the daily note template.
     Appends a '## Completed Tasks' section with the archived content.
-    Raises RuntimeError if the obsidian CLI reports failure.
+    Large content is split across multiple sequential CLI calls to stay
+    under the obsidian CLI's IPC pipe-chunk limit.
+    Raises RuntimeError if any CLI call reports failure.
     """
     absolute_path = vault_root / daily_rel_path
+    full_content = f"## Completed Tasks\n\n{content}"
+    chunks = split_on_line_boundaries(full_content, CONTENT_CHUNK_BYTES)
+    path_arg = f"path={daily_rel_path.as_posix()}"
+
+    first, *rest = chunks
     if absolute_path.exists():
-        r = obsidian_cli(
-            "append",
-            f"path={daily_rel_path.as_posix()}",
-            f"content=## Completed Tasks\n\n{content}",
-        )
+        r = obsidian_cli("append", path_arg, f"content={first}")
     else:
         r = obsidian_cli(
-            "create",
-            "template=daily",
-            f"path={daily_rel_path.as_posix()}",
-            f"content=## Completed Tasks\n\n{content}",
+            "create", "template=daily", path_arg, f"content={first}"
         )
     if r.returncode != 0:
         raise RuntimeError(
             f"Error archiving to note: path={daily_rel_path}, error={r.stderr.strip()}"
         )
+
+    for chunk in rest:
+        r = obsidian_cli("append", path_arg, f"content={chunk}")
+        if r.returncode != 0:
+            raise RuntimeError(
+                f"Error appending chunk to note: path={daily_rel_path}, error={r.stderr.strip()}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +332,6 @@ def archive_tasks(
     other dates.
     """
     done_tasks = fetch_done_tasks(api_base)
-    log.info("Found %d done tasks", len(done_tasks))
 
     if not done_tasks:
         return {"archived": 0, "daily_notes": 0, "failed_dates": 0, "dry_run": dry_run}
