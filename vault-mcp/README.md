@@ -1,79 +1,16 @@
-# vault-mcp
+Contextualizing spec for vault mcp server. This server basically tries to expose vault details like tasks, efforts, etc in an api so dashboards/scripts/llms can operate on vault fundamentals instead of needing to parse and develop them from markdown at every step. Specs are always written to `readme.md` to better operate with github.
 
-A dockerized MCP server providing fast, cached access to vault tasks and efforts.
-
-## Features
-
-- In-process cache of all `TASKS.md` files across the vault — no per-request file parsing
-- In-memory SQLite index for efficient filtered queries (by status, effort, due date, etc.)
-- Background file watcher that auto-refreshes the cache when files change
-- Full task and effort management via MCP tools
-- Lossless write-back: the in-memory model captures all task semantics; `formatting.py` defines the canonical tag rendering format
-
-## MCP Tools
-
-### Task Tools
-| Tool | Description |
-|------|-------------|
-| `task_list` | Filter tasks: status, effort, due, stub, blocked, atomic |
-| `task_get` | Get single task by ID |
-| `task_add` | Add new task with auto-generated ID |
-| `task_update` | Update task metadata |
-| `task_blockers` | Show upstream/downstream blocking relationships |
-| `cache_status` | Show cache statistics |
-
-### Effort Tools
-| Tool | Description |
-|------|-------------|
-| `effort_list` | List efforts by status |
-| `effort_get` | Get effort details + task summary |
-| `effort_focus` | Set focused effort |
-| `effort_get_focus` | Get current focused effort |
-| `effort_activate` | Move effort to active |
-| `effort_backlog` | Move effort to backlog |
-| `effort_scan` | Rebuild effort state from filesystem |
-
-## Setup
-
-### Docker
-
-```bash
-docker build -t vault-mcp .
-```
-
-### Claude Code Integration
-
-Add to your `~/.claude/mcp.json` or project `.mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "vault": {
-      "command": "docker",
-      "args": [
-        "run", "--rm", "-i",
-        "-v", "/path/to/your/vault:/vault:rw",
-        "-e", "VAULT_ROOT=/vault",
-        "vault-mcp"
-      ]
-    }
-  }
-}
-```
-
-## Configuration
-
-| Environment Variable | Default | Description |
-|----------------------|---------|-------------|
-| `VAULT_ROOT` | (required) | Path to vault directory |
-| `EXCLUDE_DIRS` | `.git,.obsidian,node_modules,.trash` | Comma-separated dir names to skip |
-
-## Architecture
-
-- `src/models/` — Task and Effort dataclasses
-- `src/parsers/` — TASKS.md parser and effort directory scanner
-- `src/cache/` — Thread-safe in-memory cache with SQLite metadata index
-- `src/watcher/` — watchdog-based file system watcher
-- `src/tools/` — MCP tool handler implementations
-- `src/utils/` — Date parsing, ID generation, canonical tag formatting
-- `src/server.py` — MCP server entry point
+<!-- Folder structure -->
+- `specs/` - individual files specifying systems and architectural components.
+  - `server.md` - defines the server routes and functionality
+  - `arch/` - individual files that identify a reusable architectural component, specify the interface for the component (how other systems use this component and the requirements that implementations have to satisfy). Individual implementation specs MUST refer to this template file so that we can maintain a consistent pattern
+    - `routes.md` - defines the structure of a route spec (stored under `routes/`)
+    - `database.md` - defines the structure of a database system spec (stored under `database/`)
+  - `system/` - files that identify the individual system that the server exposes. These specs are basically intended to be referenced by implementation specs to provide context for terminology and references for system functionality
+    - `routes.md`
+  - `utils/` - helper files to specify utility functionality that is common to multiple systems but doesn't map to architectural templates. These basically map to `src/utils/`
+- `src/` - the root folder for all generated code
+  - `database/` - spec files describing database systems, data models, and interactions. Common database code and specs lie in the root while system-specific logic lies in per-system sub-folders. Effectively, each system defines a sub-folder that has the following files: `readme.md`, `model.py`, `query.py`
+  - `routes/` - folder for the mcp/rest endpoints that we are exposing. for simplicity, we only define the mcp server and rely on fastmcp fastapi integration to generate the rest endpoint. Each system integration creates a sub-folder and each endpoint that that system exposes defines a unique sub-folder underneath the system folder. Each endpoint folder is 3 files: `readme.md` `route.py`, `test.py`. All `route.py` files under this folder are agglomerated into a single exposed mcp/rest server in `routes/server.py`
+  - `vault/` - folder for all functionality that interacts with the obsidian vault, specifically the parsing and extraction logic for each system. Also contains logic for updating files, including debounce functionality to avoid frequent updating
+  - `utils/` - various utilities that do not fit in the general patterns. Effectively these are just additional libraries
