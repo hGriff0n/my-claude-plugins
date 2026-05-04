@@ -4,8 +4,8 @@ Defines the contract for a system's domain types. Each system owns one OpenAPI d
 
 ## Source of truth
 
-- **`specs/systems/<name>/schema.yaml`** — OpenAPI 3.x document. Hand-edited. Defines all domain types and enums for the system.
-- **`src/schemas/<name>.py`** — pydantic v2 module, generated from the yaml. Checked in. Never hand-edited after the initial bootstrap; each file carries a header marking it as generated.
+- **`specs/systems/<name>/schema.yaml`** — OpenAPI 3.x document. Defines all domain types and enums for the system.
+- **`src/schemas/<name>.py`** — pydantic v2 module, generated from the yaml. Each file carries a header marking it as generated.
 
 The system readme (`arch/system.md`) references the yaml from its `## Resource Schema` section and lists which OpenAPI types should be registered as database tables.
 
@@ -39,12 +39,3 @@ Regenerate whenever `schema.yaml` changes. The generated file is committed so co
 - Endpoint-specific request/response wrappers (`GetEffortRequest`, `ListEffortsResponse`, …) — those are pydantic models defined directly in the owning `route.py` (or `routes/<system>/models.py` if shared across routes within a system).
 - Parser-internal scratch types — those stay private to `src/vault/<system>/`.
 - Database-internal types (e.g. an index key, a cache entry).
-
-## Imports (generated module)
-
-- The generated `src/schemas/<name>.py` imports only from stdlib, pydantic, and other `src/schemas/` modules.
-- No imports from `database/`, `routes/`, or `vault/`.
-
-## Initial bootstrap
-
-The yaml files for existing systems are seeded once from the current hand-written `src/schemas/*.py`. After the bootstrap, the direction reverses: edit yaml, regenerate py.
