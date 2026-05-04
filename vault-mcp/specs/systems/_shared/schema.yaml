@@ -1,0 +1,23 @@
+openapi: 3.1.0
+info:
+  title: Shared Schemas
+  version: "1.0"
+components:
+  schemas:
+    TimeBlock:
+      type: object
+      description: Common time properties carried by most domain objects.
+      required: [created, last_updated, due, scheduled]
+      properties:
+        created:
+          type: string
+          format: date
+        last_updated:
+          type: string
+          format: date
+        due:
+          type: string
+          format: date
+        scheduled:
+          type: string
+          format: date

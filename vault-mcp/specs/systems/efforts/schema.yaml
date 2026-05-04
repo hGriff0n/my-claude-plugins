@@ -1,0 +1,52 @@
+openapi: 3.1.0
+info:
+  title: Efforts Schema
+  version: "1.0"
+components:
+  schemas:
+    EffortStatus:
+      type: string
+      enum: [ACTIVE, BACKLOG]
+
+    TaskStats:
+      type: object
+      description: Short summarizations of task counts useful for display.
+      required: [num_by_status]
+      properties:
+        num_by_status:
+          type: object
+          description: Number of tasks in each status; keys are TaskStatus enum string values.
+          additionalProperties:
+            type: integer
+
+    DisplayDetails:
+      type: object
+      description: Computed values useful for displaying the effort.
+      required: [task_stats]
+      properties:
+        task_stats:
+          $ref: "#/components/schemas/TaskStats"
+
+    TimeBlock:
+      $ref: "../_shared/schema.yaml#/components/schemas/TimeBlock"
+
+    Effort:
+      type: object
+      description: A single effort in the vault.
+      required: [name, path, status, description, time_details, display]
+      properties:
+        name:
+          type: string
+          description: The effort's name; the final folder in `path`.
+        path:
+          type: string
+          description: Vault-relative folder path.
+        status:
+          $ref: "#/components/schemas/EffortStatus"
+        description:
+          type: string
+          description: Short text describing the effort goal and purpose.
+        time_details:
+          $ref: "#/components/schemas/TimeBlock"
+        display:
+          $ref: "#/components/schemas/DisplayDetails"

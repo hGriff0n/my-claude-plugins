@@ -1,0 +1,64 @@
+openapi: 3.1.0
+info:
+  title: Tasks Schema
+  version: "1.0"
+components:
+  schemas:
+    TaskType:
+      type: string
+      description: Milestones are tasks internally but aren't stored as such in Obsidian.
+      enum: [MILESTONE, TASK]
+
+    TaskStatus:
+      type: string
+      enum: [OPEN, CLOSED, IN_PROGRESS, BLOCKED]
+
+    Dependencies:
+      type: object
+      required: [blocked, parent, children]
+      properties:
+        blocked:
+          type: array
+          description: Task ids of blocking tasks.
+          items: { type: string }
+        parent:
+          type: string
+          description: Task id of the parent task.
+        children:
+          type: array
+          description: Task ids of child tasks (B = A.parent <=> A in B.children).
+          items: { type: string }
+
+    TimeBlock:
+      $ref: "../_shared/schema.yaml#/components/schemas/TimeBlock"
+
+    Task:
+      type: object
+      description: A single task.
+      required: [id, type, status, text, effort, notes, tags, dependencies, time_details]
+      properties:
+        id:
+          type: string
+          description: Hexadecimal id internally generated for each task.
+        type:
+          $ref: "#/components/schemas/TaskType"
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+        text:
+          type: string
+          description: The task title line.
+        effort:
+          type: string
+          description: Parent effort name, or 'none' if in the root taskfile.
+        notes:
+          type: array
+          description: Bullet points attaching additional info/investigation.
+          items: { type: string }
+        tags:
+          type: array
+          description: Tags/properties parsed from the taskline.
+          items: { type: string }
+        dependencies:
+          $ref: "#/components/schemas/Dependencies"
+        time_details:
+          $ref: "#/components/schemas/TimeBlock"

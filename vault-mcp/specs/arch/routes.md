@@ -1,6 +1,6 @@
 # Route Spec Template
 
-Defines the contract every `src/routes/<system>/<op>/` route must follow. Implementation specs MUST reference this template.
+Defines the contract every `src/routes/<system>/<op>/` route must follow. Each route's spec lives as a subsection of its system readme (`specs/systems/<name>/readme.md`); see `arch/system.md`.
 
 ## Files
 
@@ -9,15 +9,14 @@ Each route is a folder under `src/routes/<system>/<op>/` with these required fil
 | File | Purpose |
 |---|---|
 | `route.py` | Handler implementation, FastAPI decorator, pydantic body/response models. |
-| `readme.md` | Route spec — Endpoint / Request / Response / Behavior. References this template. |
 | `test.py` | Route-level unit tests. |
 
 ## `route.py`
 
 - Defines exactly one FastAPI handler.
 - Decorator carries the HTTP method, path, status code, and `operation_id` matching the parent folder structure: `<system>_<op>` (e.g. `effort_create`).
-- Endpoint-specific request/response wrappers (`<Verb><Resource>Request`, `<Verb><Resource>Response`) live in this file alongside the handler. The resource types they reference are imported from `src/schemas/<system>.py` and never redefined here. If a wrapper needs to be shared across routes within a system, lift it to `routes/<system>/models.py` — never import models across systems.
-- Handler reads and writes via `db.<system>` only. Routes MUST NOT call other routes via HTTP. Cross-system orchestration happens by composing `db` calls from multiple systems within a single route handler.
+- Endpoint-specific request/response wrappers (`<Verb><Resource>Request`, `<Verb><Resource>Response`) live in this file alongside the handler. The resource types they reference are imported from `src/schemas/<system>.py` and never redefined here.
+- Handler reads and writes through the database component (`components/database.md`) and parser writes. Routes MUST NOT call other routes via HTTP. Cross-system orchestration happens by composing queries/writes against multiple registered tables within a single handler.
 - Errors are raised as `HTTPException`.
 
 ## Request/Response design
@@ -50,9 +49,9 @@ Non-CRUD operations (e.g. moving an effort) follow AIP-136 for typing but use a 
 - Delete returns 204 with no body.
 - Custom methods follow the rule above.
 
-## `readme.md`
+## Spec sections (in the system readme)
 
-Each route readme has these sections:
+Each route subsection inside the owning system readme uses these headings:
 
 - **Endpoint** — HTTP method, path, `operation_id`.
 - **Request** — body schema and/or query/path params; required vs. optional.
