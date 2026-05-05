@@ -46,11 +46,6 @@ class MoveEffort:
 Update = Union[CreateEffort, MoveEffort]
 
 
-_README_TEMPLATE = "# {name}\n\nDescribe the effort here.\n"
-_CLAUDE_TEMPLATE = "# {name}\n\nClaude context for this effort.\n"
-_TASKS_TEMPLATE = "# {name} – Tasks\n\n## Open\n\n## In Progress\n\n## Closed\n"
-
-
 def _is_effort_folder(folder: Path) -> bool:
     return folder.is_dir() and all((folder / f).exists() for f in REQUIRED_FILES)
 
@@ -215,14 +210,14 @@ class EffortParser:
         else:
             target.mkdir(parents=True, exist_ok=True)
 
-        templates = {
-            "00 README.md": _README_TEMPLATE.format(name=name),
-            "CLAUDE.md": _CLAUDE_TEMPLATE.format(name=name),
-            "01 TASKS.md": _TASKS_TEMPLATE.format(name=name),
-        }
-        for filename, content in templates.items():
+        templates = [
+            ("efforts/claude", "CLAUDE.md"),
+            ("efforts/readme", "00 README.md"),
+            ("efforts/taskfile", "01 TASKS.md"),
+        ]
+        for template, filename in templates:
             rel = (target / filename).relative_to(self.vault_root).as_posix()
-            res = obsidian_cli("create", rel, content)
+            res = obsidian_cli("create", f"template={template}", f'path="{rel}"')
             if res.returncode != 0:
                 raise RuntimeError(
                     f"obsidian_cli create failed for {rel}: {res.stderr.strip()}"
