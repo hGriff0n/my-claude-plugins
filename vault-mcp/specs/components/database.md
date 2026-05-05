@@ -30,6 +30,8 @@ At server startup, each system imports its generated `src/schemas/<name>.py`, ca
 
 Any registered table is queryable by any caller. Cross-system reads are simply queries against another table; there is no special channel. Cross-system *writes* go through the owning system's documented write operations (its parser `write` and the routes that wrap it) — do not `update(...)` another system's table directly outside that system's code.
 
+This implies that there is an interface to get the tables for a given system
+
 ## System-specific wrappers
 
 A system may add convenience wrappers (e.g. `tasks_by_effort(effort_name)`) inside its own module. These are thin compositions of `query(...)` and live with the system, not in the database component. The component itself stays generic.
