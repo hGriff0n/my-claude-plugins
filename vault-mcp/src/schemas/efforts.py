@@ -5,8 +5,7 @@ from typing import Dict, List
 
 from pydantic import BaseModel
 
-# TODO: claude - this is wrong relative import
-from time import TimeBlock
+from schemas.time import TimeBlock
 
 
 class EffortStatus(str, Enum):

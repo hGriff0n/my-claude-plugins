@@ -5,8 +5,7 @@ from typing import List
 
 from pydantic import BaseModel
 
-# TODO: claude - this is wrong relative import
-from time import TimeBlock
+from schemas.time import TimeBlock
 
 
 # Milestones are tasks internally but aren't stored as such in obsidian
