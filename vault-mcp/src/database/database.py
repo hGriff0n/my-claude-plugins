@@ -72,26 +72,29 @@ class Database:
         rows = self._conn.execute(sql).fetchall()
         return [_row_to_model(dict(r), ref.model) for r in rows]
 
-    def update(self, key: BaseModel, elem: BaseModel) -> None:
-        """Upsert `elem`, locating the existing row via `key`'s `id`/`name`."""
-        if type(key) is not type(elem):
-            raise TypeError("key and elem must share a type")
-        ref = self._by_model.get(type(key))
-        if ref is None:
-            raise ValueError(f"Model {type(key).__name__} is not registered")
+    def update(self, elem: BaseModel, *, delete: bool = False) -> None:
+        """Upsert `elem`, locating the existing row via `elem`'s `id`/`name`.
 
-        id_field = _identity_field(type(key))
-        id_value = getattr(key, id_field)
-        elem_row = _model_to_row(elem)
+        With `delete=True`, the existing row is removed and no replacement
+        is inserted.
+        """
+        ref = self._by_model.get(type(elem))
+        if ref is None:
+            raise ValueError(f"Model {type(elem).__name__} is not registered")
+
+        id_field = _identity_field(type(elem))
+        id_value = getattr(elem, id_field)
 
         cur = self._conn.cursor()
         cur.execute(f'DELETE FROM "{ref.name}" WHERE "{id_field}" = ?', (id_value,))
-        cols = ", ".join(f'"{c}"' for c in elem_row)
-        placeholders = ", ".join("?" * len(elem_row))
-        cur.execute(
-            f'INSERT INTO "{ref.name}" ({cols}) VALUES ({placeholders})',
-            list(elem_row.values()),
-        )
+        if not delete:
+            elem_row = _model_to_row(elem)
+            cols = ", ".join(f'"{c}"' for c in elem_row)
+            placeholders = ", ".join("?" * len(elem_row))
+            cur.execute(
+                f'INSERT INTO "{ref.name}" ({cols}) VALUES ({placeholders})',
+                list(elem_row.values()),
+            )
         self._conn.commit()
 
     def tables(self, system: str) -> List[TableRef]:
