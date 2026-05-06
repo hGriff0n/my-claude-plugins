@@ -24,30 +24,38 @@ A taskfile is the unit of scan; individual tasks are extracted by `parse`.
 
 `parse(file)` reads a taskfile and returns a `list[Task]`. Per file:
 
-- Walk the file in a single pass, tracking the current heading section (which encodes a default `status` for tasks underneath, see below).
-- For each line matching the Obsidian task pattern (`- [ ] …`, `- [x] …`, `- [/] …`, `- [-] …`):
-  - `id` ← parsed from a trailing `^<hex>` block-id; if absent, generated and written back via `update_id`.
-  - `type` ← `MILESTONE` if the task is under a milestones heading or carries a `#milestone` tag, else `TASK`.
-  - `status` ← parsed from the checkbox glyph and from the section heading (`OPEN`, `IN_PROGRESS`, `BLOCKED`, `CLOSED`).
-  - `text` ← the line's content with task syntax stripped.
+- Optionally consume a leading YAML frontmatter block (`---` … `---`) and preserve it verbatim for write-back.
+- Walk the body in a single pass, tracking the current heading section. Headings delimit sections and are preserved on each task for write-back, but they do **not** encode `status`.
+- For each line matching the Obsidian task pattern (`- [ ] …`, `- [x] …`, `- [/] …`, `- [-] …`) — `- [[…]]` wiki-link lines are excluded:
+  - The line's content (everything after `- [x] `) is split into a `title` and a trailing metadata tail. The split point is the first occurrence of any of:
+    - a known emoji from the canonical map (🆔 `id`, 📅 `due`, ⏳ `scheduled`, ➕ `created`, ✅ `completed`, ⛔ `blocked`),
+    - a `#tag` token at a word boundary that is not inside `[[…]]` or `(…)`,
+    - a dataview property opener `[key::` or `(key::`.
+  - The metadata tail is tokenised into `tags: dict[str, str]` plus a `dataview_tags: set[str]` recording which tag names were declared with dataview syntax. Three syntaxes are recognised:
+    - **Emoji**: known emoji → next whitespace token is the value (`📅 2026-02-15` → `due=2026-02-15`). Unknown emoji greedily consume tokens until the next metadata token.
+    - **Hashtag**: `#name` → flag tag with empty value; `#name:value` → tag with value.
+    - **Dataview**: `[name::value]` or `(name::value)` → tag with value, name added to `dataview_tags`. Tags `estimate`, `actual`, `effort` are always re-rendered as dataview on write regardless of original syntax.
+  - `id` ← `tags["id"]` if present (any of the three syntaxes); if absent, generated and written back via `update_id`.
+  - `type` ← `MILESTONE` if the task is under a milestones heading or carries a `milestone` tag, else `TASK`.
+  - `status` ← from the checkbox glyph alone: `[ ]` → `OPEN`, `[x]` → `CLOSED`, `[/]` → `IN_PROGRESS`, `[-]` → cancelled. `BLOCKED` is derived at the API mapping layer when a `blocked` tag with a non-empty value is present.
+  - `text` ← the title portion (task line with checkbox prefix and metadata tail stripped).
   - `effort` ← derived from the file path: the effort folder name, or `"none"` for the root taskfile.
-  - `notes` ← contiguous indented bullet lines following the task.
-  - `tags` ← `#tag` tokens parsed from the task line.
-  - `dependencies.parent` ← parent task id if this task is nested under another task; `dependencies.children` is filled in a second pass after all tasks are collected.
-  - `dependencies.blocked` ← from inline `blocks:<id>` / `blocked-by:<id>` markers in the task line or notes.
-  - `time_details` ← `created` / `last_updated` / `due` / `scheduled` from inline metadata when present.
+  - `notes` ← contiguous indented bullet lines following the task line whose indent exceeds the task's indent. Stored with their relative indent so nested note structure round-trips.
+  - `dependencies.parent` ← the id of the enclosing task when this task is a more-deeply-indented `- [ ]` line under another task; `dependencies.children` is filled in a second pass after all tasks are collected.
+  - `dependencies.blocked` ← parsed from the `blocked` tag (canonical glyph `⛔`, also accepted as `#blocked:<id>` or `[blocked::<id>]`). Multiple blockers are encoded as a comma-separated value.
+  - `time_details` ← `created` / `due` / `scheduled` / `completed` from the corresponding emoji/dataview/hashtag entries when present.
 
 ### Write Operations
 
 The parser's `Update` type enumerates:
 
-- `create` — append a new task line to the appropriate taskfile under the section that matches its target status. Generates and writes the block-id back into the file.
-- `update_status` — change a task's status. Moves the line between sections in its file when the section encodes status.
-- `update_text` — rewrite the task title line, preserving id and metadata.
-- `update_dependencies` — rewrite the inline `blocks:` / `blocked-by:` markers and parent nesting.
-- `update_metadata` — update `time_details` / `tags` markers on the task line.
+- `create` — append a new task line to the appropriate taskfile. Generates an `id` tag and renders the task in canonical form via `utils/formatting.render_tags`.
+- `update_status` — change a task's status by rewriting the checkbox glyph in place.
+- `update_text` — rewrite the task title portion of the line, preserving the trailing tag block.
+- `update_dependencies` — rewrite the `blocked` tag (and any parent-nesting indent) for the task. There are no separate `blocks:` / `blocked-by:` markers — outgoing-blocker information is reconstructed by the indexer from the `blocked` values of other tasks.
+- `update_metadata` — update individual tag entries (`due`, `scheduled`, `created`, `completed`, arbitrary `#tag` / dataview entries). All tags are re-rendered through the canonical formatter so the on-disk syntax converges to the canonical form for known tags.
 - `archive` — move a `CLOSED` task out of the active taskfile into a long-term archive store; the task drops from the index after the next re-parse.
-- `update_id` — internal write used by `parse` to backfill a missing block-id; not exposed externally.
+- `update_id` — internal write used by `parse` to backfill a missing `id` tag; not exposed externally.
 
 All writes are direct file I/O batched through `vault/debounce.py` (see `arch/parser.md`).
 
