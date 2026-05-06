@@ -21,6 +21,8 @@ from fastmcp import FastMCP
 from starlette.middleware.cors import CORSMiddleware
 
 from database import Database
+from routes.deps import App, set_app
+from routes.routes import router as api_router
 from schemas.efforts import Effort
 from utils.obsidian import obsidian_cli
 from vault.efforts.parser import EffortParser
@@ -70,8 +72,7 @@ def _probe_vault_root() -> Path | None:
     return vault_root
 
 
-def _seed_efforts(db: Database, vault_root: Path) -> None:
-    parser = EffortParser(vault_root)
+def _seed_efforts(db: Database, parser: EffortParser) -> None:
     count = 0
     for folder in parser.scan():
         for effort in parser.parse(folder):
@@ -93,7 +94,10 @@ def _initialize_vault(db: Database) -> bool:
         log.info("Vault root: %s", vault_root)
 
         db.register(Effort, system="efforts")
-        _seed_efforts(db, vault_root)
+        effort_parser = EffortParser(vault_root)
+        _seed_efforts(db, effort_parser)
+
+        set_app(App(db=db, effort_parser=effort_parser, api_router=api_router))
 
         _state["vault_root"] = vault_root
         _state["initialized"] = True
@@ -126,6 +130,7 @@ def main() -> None:
         openapi_url="/openapi.json",
         redirect_slashes=False,
     )
+    rest_app.include_router(api_router)
 
     initialized = _initialize_vault(db)
     if not initialized:
@@ -141,6 +146,7 @@ def main() -> None:
         title="vault-mcp",
         redirect_slashes=False,
         lifespan=mcp_asgi.lifespan,
+        openapi_url="/openapi.json",
     )
     app.add_middleware(
         CORSMiddleware,

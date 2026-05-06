@@ -60,4 +60,6 @@ Each route subsection inside the owning system readme uses these headings:
 
 ## Aggregation
 
-`src/routes/server.py` walks all `src/routes/<system>/<op>/route.py` files and registers each handler into a single FastAPI app. The MCP server is generated from this app via `FastMCP.from_fastapi`, so every route is automatically exposed as both a REST endpoint and an MCP tool.
+Each `route.py` defines its own `router = APIRouter()` and attaches its handler to it. `src/routes/routes.py` imports every `<system>/<op>/route.py` module and includes each `router` into a single top-level `APIRouter`, exported as `router`. The server mounts this joined router onto the FastAPI app, and the MCP server is generated from that app via `FastMCP.from_fastapi`, so every route is automatically exposed as both a REST endpoint and an MCP tool.
+
+When a new route is added, its module must be imported and included in `src/routes/routes.py`.

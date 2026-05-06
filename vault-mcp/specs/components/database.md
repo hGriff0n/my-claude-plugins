@@ -15,8 +15,8 @@ The database exposes a small generic interface — no specialized per-system que
   - Runs a raw SQL query against the registered tables. Results are deserialized back into the registered pydantic types.
   - Callers compose whatever SQL they need; the database does not curate per-system query helpers.
 
-- **`update(key: T, elem: T) -> None`**
-  - Upserts `elem` keyed by the existing identity of `key`. Replaces the row.
+- **`update(elem: T) -> None`**
+  - Upserts `elem` keyed by the existing identity of `elem`. Replaces the row.
 
 ## Field flattening
 
@@ -35,3 +35,5 @@ This implies that there is an interface to get the tables for a given system
 ## System-specific wrappers
 
 A system may add convenience wrappers (e.g. `tasks_by_effort(effort_name)`) inside its own module. These are thin compositions of `query(...)` and live with the system, not in the database component. The component itself stays generic.
+
+<!-- Rework to move query/writing onto a table object. the database now merely works as table registration/resolution plus provides the actual query runners that the tables use. users call getTableForSystem or some sort and then run the sql query through the returned table object -->

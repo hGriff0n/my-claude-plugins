@@ -35,7 +35,7 @@ def effort_create(body: CreateEffortRequest, app: App = Depends(get_app)) -> Eff
     parser = app.effort_parser
     folder = parser.vault_root / "efforts" / name
     try:
-        parser.write(_placeholder(name), CreateEffort())
+        parser.write(_new_effort(name), CreateEffort())
     except FileExistsError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -53,7 +53,7 @@ def effort_create(body: CreateEffortRequest, app: App = Depends(get_app)) -> Eff
 
 
 # rename as "placeholder" means something else. This is more of a "new effort"
-def _placeholder(name: str) -> Effort:
+def _new_effort(name: str) -> Effort:
     from datetime import date
     from pathlib import Path
 
@@ -61,14 +61,14 @@ def _placeholder(name: str) -> Effort:
     from schemas.tasks import TaskStatus
     from schemas.time import TimeBlock
 
-    null = date.min
+    today = date.today()
     return Effort(
         name=name,
         path=Path(f"efforts/{name}"),
         status=EffortStatus.ACTIVE,
         description="",
         time_details=TimeBlock(
-            created=null, last_updated=null, due=null, scheduled=null
+            created=today, last_updated=today, due=today, scheduled=today
         ),
         display=DisplayDetails(
             task_stats=TaskStats(num_by_status={s.value: 0 for s in TaskStatus})
