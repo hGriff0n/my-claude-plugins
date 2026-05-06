@@ -34,6 +34,12 @@ class Database:
         self._by_name: Dict[str, TableRef] = {}
         self._by_model: Dict[Type[BaseModel], TableRef] = {}
         self._systems: Dict[str, List[TableRef]] = {}
+        self._model_to_system: Dict[Type[BaseModel], str] = {}
+        self._debouncer: Any = None
+
+    def attach_debouncer(self, debouncer: Any) -> None:
+        """Register the write debouncer so updates can enqueue backports."""
+        self._debouncer = debouncer
 
     # ------------------------------------------------------------------
     # Surface
@@ -60,6 +66,7 @@ class Database:
         self._by_model[model] = ref
         if system:
             self._systems.setdefault(system, []).append(ref)
+            self._model_to_system[model] = system
         return ref
 
     def query(self, sql: str) -> List[Any]:
@@ -72,12 +79,32 @@ class Database:
         rows = self._conn.execute(sql).fetchall()
         return [_row_to_model(dict(r), ref.model) for r in rows]
 
-    def update(self, elem: BaseModel, *, delete: bool = False) -> None:
-        """Upsert `elem`, locating the existing row via `elem`'s `id`/`name`.
+    def update(self, elem: BaseModel, origin: Any = None) -> None:
+        """Upsert `elem`, keyed by its identity (`id` or `name`).
 
-        With `delete=True`, the existing row is removed and no replacement
-        is inserted.
+        `origin` is the active `WatcherHandle` if this write is happening
+        inside a watcher callback (in which case the file is already
+        authoritative and no backport is enqueued), or `None` for
+        DB-first edits (route handlers, scripts) where the debouncer
+        schedules a backport at the owning system's lag.
         """
+        self._upsert(elem)
+        self._after_write(elem, origin=origin, deleted=False)
+
+    def delete(self, elem: BaseModel, origin: Any = None) -> None:
+        """Remove `elem`'s row. Same `origin` semantics as `update`."""
+        ref = self._by_model.get(type(elem))
+        if ref is None:
+            raise ValueError(f"Model {type(elem).__name__} is not registered")
+        id_field = _identity_field(type(elem))
+        id_value = getattr(elem, id_field)
+        self._conn.execute(
+            f'DELETE FROM "{ref.name}" WHERE "{id_field}" = ?', (id_value,),
+        )
+        self._conn.commit()
+        self._after_write(elem, origin=origin, deleted=True)
+
+    def _upsert(self, elem: BaseModel) -> None:
         ref = self._by_model.get(type(elem))
         if ref is None:
             raise ValueError(f"Model {type(elem).__name__} is not registered")
@@ -87,15 +114,31 @@ class Database:
 
         cur = self._conn.cursor()
         cur.execute(f'DELETE FROM "{ref.name}" WHERE "{id_field}" = ?', (id_value,))
-        if not delete:
-            elem_row = _model_to_row(elem)
-            cols = ", ".join(f'"{c}"' for c in elem_row)
-            placeholders = ", ".join("?" * len(elem_row))
-            cur.execute(
-                f'INSERT INTO "{ref.name}" ({cols}) VALUES ({placeholders})',
-                list(elem_row.values()),
-            )
+        elem_row = _model_to_row(elem)
+        cols = ", ".join(f'"{c}"' for c in elem_row)
+        placeholders = ", ".join("?" * len(elem_row))
+        cur.execute(
+            f'INSERT INTO "{ref.name}" ({cols}) VALUES ({placeholders})',
+            list(elem_row.values()),
+        )
         self._conn.commit()
+
+    def _after_write(
+        self, elem: BaseModel, *, origin: Any, deleted: bool,
+    ) -> None:
+        if self._debouncer is None:
+            return
+        system = self._model_to_system.get(type(elem))
+        if system is None:
+            return
+        parent = self._debouncer.parent_file(system, elem)
+        if parent is None:
+            return
+        self._debouncer.wal_record(
+            system=system, elem=elem, deleted=deleted, file=parent,
+        )
+        if origin is None:
+            self._debouncer.enqueue(parent, system)
 
     def tables(self, system: str) -> List[TableRef]:
         """Return the tables a given system has registered."""

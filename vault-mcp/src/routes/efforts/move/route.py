@@ -43,26 +43,11 @@ def effort_move(
     if target == current_state:
         return MoveEffortResponse(effort=prev, archived=False)
 
-    parser = app.effort_parser
     try:
-        parser.write(prev, MoveEffort(target=target))
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        app.effort_parser.update(prev, MoveEffort(target=target))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"move failed: {e}")
 
     if target == "archive":
-        app.db.update(prev, delete=True)
         return MoveEffortResponse(effort=None, archived=True)
-
-    folder_root = parser.vault_root / "efforts"
-    folder = folder_root / "__backlog" / name if target == "backlog" else folder_root / name
-    parsed = parser.parse(folder)
-    if not parsed:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Effort '{name}' moved but not recognized after parse",
-        )
-    [effort] = parsed
-    app.db.update(effort)
-    return MoveEffortResponse(effort=effort, archived=False)
+    return MoveEffortResponse(effort=prev, archived=False)

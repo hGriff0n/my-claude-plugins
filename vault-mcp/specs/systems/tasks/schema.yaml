@@ -6,8 +6,8 @@ components:
   schemas:
     TaskType:
       type: string
-      description: Milestones are tasks internally but aren't stored as such in Obsidian.
-      enum: [MILESTONE, TASK]
+      description: Milestones are tasks internally but aren't stored as such in Obsidian. Taskfile is a server-only distinction that wraps all tasks in the same taskfile
+      enum: [MILESTONE, TASK, TASKFILE]
 
     TaskStatus:
       type: string

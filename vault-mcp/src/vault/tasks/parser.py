@@ -7,11 +7,12 @@ system (`specs/systems/tasks/readme.md`).
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import emoji
 
@@ -19,8 +20,13 @@ from schemas.tasks import Dependencies, Task, TaskStatus, TaskType
 from schemas.time import TimeBlock
 from utils.formatting import EMOJI_TO_TAG, render_tags
 from utils.ids import generate_task_id
+from vault.parser import Parser
 from vault.efforts.parser import BACKLOG_DIR, EFFORTS_DIR, EffortParser
+from vault.watcher import EventType, WatchCriterion, WatcherHandle, active_origin
 
+log = logging.getLogger(__name__)
+
+SYSTEM_NAME = "tasks"
 ROOT_TASKFILE = "01 TASKS.md"
 
 _NULL_DATE = date.min
@@ -102,21 +108,86 @@ Update = Union[
 # ---- Parser ----------------------------------------------------------------
 
 
+TaskParserInterface = Parser[Task, Update]
 class TaskParser:
-    def __init__(self, effort_parser: EffortParser):
-        self._efforts = effort_parser
-        self.vault_root = self._efforts.vault_root
+    def __init__(self, vault_root: Path):
+        self.vault_root = vault_root
+        self._db: Any = None
+        self._watcher: Any = None
+        self._debouncer: Any = None
+        self._taskfile_handles: Dict[Path, WatcherHandle] = {}
 
-    def scan(self) -> List[Path]:
-        results: List[Path] = []
+    # ---- initialize ----
+
+    def initialize(self, db: Any, watcher: Any, debouncer: Any) -> None:
+        self._db = db
+        self._watcher = watcher
+        self._debouncer = debouncer
+        debouncer.register_system(
+            name=SYSTEM_NAME,
+            lag=timedelta(milliseconds=500),
+            parent_file_resolver=self._parent_file,
+            writer=self.write,
+            elements_for_file=self._elements_for_file,
+            models={Task.__name__: Task},
+        )
+        # Global taskfile (no owning effort).
         root = self.vault_root / ROOT_TASKFILE
-        if root.is_file():
-            results.append(root)
-        for effort in self._efforts.scan():
-            tf = effort / ROOT_TASKFILE
-            if tf.is_file():
-                results.append(tf)
-        return results
+        self.register_taskfile(root)
+
+    def register_taskfile(self, taskfile: Path) -> None:
+        events = frozenset({EventType.CREATE, EventType.MODIFY, EventType.DELETE})
+        handle = self._watcher.register(
+            WatchCriterion(target=taskfile, events=events),
+            self._on_taskfile_event,
+        )
+        self._taskfile_handles[taskfile] = handle
+
+    def _parent_file(self, task: Task) -> Path:
+        # Resolver returns the canonical path regardless of whether the file
+        # currently exists on disk; debouncer creates it if needed.
+        if task.effort == "none":
+            return self.vault_root / ROOT_TASKFILE
+        backlog = self.vault_root / EFFORTS_DIR / BACKLOG_DIR / task.effort / ROOT_TASKFILE
+        if backlog.is_file():
+            return backlog
+        return self.vault_root / EFFORTS_DIR / task.effort / ROOT_TASKFILE
+
+    def _elements_for_file(self, file: Path) -> List[Task]:
+        try:
+            rel = file.relative_to(self.vault_root)
+        except ValueError:
+            return []
+        if rel.parts == (ROOT_TASKFILE,):
+            effort_name = "none"
+        elif (
+            rel.parts and rel.parts[0] == EFFORTS_DIR
+            and rel.parts[-1] == ROOT_TASKFILE
+        ):
+            if len(rel.parts) == 4 and rel.parts[1] == BACKLOG_DIR:
+                effort_name = rel.parts[2]
+            elif len(rel.parts) == 3:
+                effort_name = rel.parts[1]
+            else:
+                return []
+        else:
+            return []
+        return [
+            t for t in self._db.query('SELECT * FROM "task"')
+            if t.effort == effort_name
+        ]
+
+    def _on_taskfile_event(
+        self, file: Path, event: EventType, handle: WatcherHandle,
+    ) -> None:
+        if event == EventType.DELETE:
+            for task in self._elements_for_file(file):
+                self._db.delete(task, origin=handle)
+            return
+        if not file.is_file():
+            return
+        for task in self.parse(file):
+            self._db.update(task, origin=handle)
 
     def parse(self, file: Path) -> List[Task]:
         file = Path(file)
@@ -151,26 +222,75 @@ class TaskParser:
             for rec in records
         ]
 
-    def write(self, task: Task, update: Update) -> None:
-        if isinstance(update, CreateTask):
-            self._create(task)
+    def update(self, task: Task, op: Update) -> None:
+        origin = active_origin()
+        if isinstance(op, CreateTask):
+            if not task.id:
+                task.id = generate_task_id()
+            self._db.update(task, origin=origin)
             return
-        if isinstance(update, UpdateStatus):
-            self._mutate(task, status=update.status)
+        if isinstance(op, ArchiveTask):
+            self._db.delete(task, origin=origin)
             return
-        if isinstance(update, UpdateText):
-            self._mutate(task, title=update.text)
+        if isinstance(op, UpdateStatus):
+            task.status = op.status
+        elif isinstance(op, UpdateText):
+            task.text = op.text
+        elif isinstance(op, UpdateDependencies):
+            task.dependencies = op.dependencies
+            if op.dependencies.blocked:
+                task.status = TaskStatus.BLOCKED
+        elif isinstance(op, UpdateMetadata):
+            if op.tags is not None:
+                task.tags = list(op.tags)
+            if op.time_details is not None:
+                task.time_details = op.time_details
+        else:
+            raise TypeError(f"Unknown Update: {op!r}")
+        self._db.update(task, origin=origin)
+
+    def write(self, file: Path, elements: List[Task]) -> None:
+        """Project tasks to disk by rewriting the taskfile body.
+
+        Existing frontmatter is preserved as-is — this is a transitional
+        carve-out pending the TASKFILE-type Task model that will store
+        frontmatter (and section headers as MILESTONE tasks) in the DB so
+        the entire file can be rebuilt purely from elements. Once that
+        lands, frontmatter preservation moves into the element list.
+        """
+        if not elements and not file.exists():
             return
-        if isinstance(update, UpdateDependencies):
-            self._mutate(task, dependencies=update.dependencies)
-            return
-        if isinstance(update, UpdateMetadata):
-            self._mutate(task, free_tags=update.tags, time_details=update.time_details)
-            return
-        if isinstance(update, ArchiveTask):
-            self._archive(task)
-            return
-        raise TypeError(f"Unknown Update: {update!r}")
+        file.parent.mkdir(parents=True, exist_ok=True)
+
+        frontmatter = _read_frontmatter(file) if file.is_file() else ""
+        lines: List[str] = []
+        if frontmatter:
+            lines.append(frontmatter.rstrip("\n"))
+            lines.append("")
+        lines.append("# Tasks")
+        lines.append("")
+
+        by_id = {t.id: t for t in elements}
+        children_by_parent: Dict[str, List[Task]] = {}
+        roots: List[Task] = []
+        for task in elements:
+            parent = task.dependencies.parent
+            if parent and parent in by_id:
+                children_by_parent.setdefault(parent, []).append(task)
+            else:
+                roots.append(task)
+
+        def emit(task: Task, depth: int) -> None:
+            lines.append(_render_task_line(task, depth))
+            for note in task.notes:
+                lines.append("    " * (depth + 1) + "- " + note)
+            for child in children_by_parent.get(task.id, []):
+                emit(child, depth + 1)
+
+        for task in roots:
+            emit(task, 0)
+
+        file.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     # ---- parse helpers ----
 
@@ -330,116 +450,29 @@ class TaskParser:
                 return parts[1]
         return "none"
 
-    def _create(self, task: Task) -> None:
-        path = self._taskfile_for(task.effort)
-        if not task.id:
-            task.id = generate_task_id()
 
-        tags: Dict[str, str] = {"id": task.id}
-        td = task.time_details
-        for fld in ("created", "due", "scheduled"):
-            value = getattr(td, fld, None)
-            if value and value != _NULL_DATE:
-                tags[fld] = value.isoformat()
-        if task.dependencies.blocked:
-            tags["blocked"] = ",".join(task.dependencies.blocked)
-        if task.type == TaskType.MILESTONE:
-            tags.setdefault("milestone", "")
-        for entry in task.tags:
-            name, _, value = entry.partition(":")
-            if name:
-                tags[name] = value
-
-        line = _build_line(
-            indent_level=0,
-            checkbox=_CHECKBOX_FOR_STATUS.get(task.status, " "),
-            title=task.text,
-            tags=tags,
-            dataview_tags=set(),
-        )
-        existing = path.read_text(encoding="utf-8") if path.is_file() else ""
-        if existing and not existing.endswith("\n"):
-            existing += "\n"
-        path.write_text(existing + line + "\n", encoding="utf-8")
-
-    def _mutate(
-        self,
-        task: Task,
-        *,
-        status: Optional[TaskStatus] = None,
-        title: Optional[str] = None,
-        dependencies: Optional[Dependencies] = None,
-        free_tags: Optional[List[str]] = None,
-        time_details: Optional[TimeBlock] = None,
-    ) -> None:
-        path = self._taskfile_for(task.effort)
-        lines = path.read_text(encoding="utf-8").splitlines()
-        idx = _find_task_line(lines, task.id)
-        if idx is None:
-            raise KeyError(f"Task {task.id!r} not found in {path}")
-
-        m = _TASK_RE.match(lines[idx])
-        indent = _indent_level(m.group(1))
-        checkbox = m.group(2)
-        existing_title, tags, dataview_tags = _split_tags(m.group(3))
-
-        if status is not None:
-            checkbox = _CHECKBOX_FOR_STATUS.get(status, checkbox)
-        new_title = title if title is not None else existing_title
-
-        if dependencies is not None:
-            if dependencies.blocked:
-                tags["blocked"] = ",".join(dependencies.blocked)
-            else:
-                tags.pop("blocked", None)
-
-        if time_details is not None:
-            for fld in ("created", "due", "scheduled"):
-                value = getattr(time_details, fld, None)
-                if value and value != _NULL_DATE:
-                    tags[fld] = value.isoformat()
-                else:
-                    tags.pop(fld, None)
-
-        if free_tags is not None:
-            for k in [
-                k for k in tags
-                if k not in _RESERVED_TAGS and not _is_emoji_key(k)
-            ]:
-                tags.pop(k)
-                dataview_tags.discard(k)
-            for entry in free_tags:
-                name, _, value = entry.partition(":")
-                if name:
-                    tags[name] = value
-
-        lines[idx] = _build_line(indent, checkbox, new_title, tags, dataview_tags)
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-    def _archive(self, task: Task) -> None:
-        path = self._taskfile_for(task.effort)
-        lines = path.read_text(encoding="utf-8").splitlines()
-        idx = _find_task_line(lines, task.id)
-        if idx is None:
-            return
-        m = _TASK_RE.match(lines[idx])
-        task_indent = _indent_level(m.group(1)) if m else 0
-        end = idx + 1
-        while end < len(lines):
-            stripped = lines[end].strip()
-            if not stripped:
-                end += 1
-                continue
-            if stripped.startswith("#"):
-                break
-            if stripped.startswith("- [") and not stripped.startswith("- [["):
-                break
-            lead = lines[end][: len(lines[end]) - len(lines[end].lstrip())]
-            if _indent_level(lead) <= task_indent:
-                break
-            end += 1
-        del lines[idx:end]
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+def _render_task_line(task: Task, depth: int) -> str:
+    tags: Dict[str, str] = {"id": task.id}
+    td = task.time_details
+    for fld in ("created", "due", "scheduled"):
+        value = getattr(td, fld, None)
+        if value and value != _NULL_DATE:
+            tags[fld] = value.isoformat()
+    if task.dependencies.blocked:
+        tags["blocked"] = ",".join(task.dependencies.blocked)
+    if task.type == TaskType.MILESTONE:
+        tags.setdefault("milestone", "")
+    for entry in task.tags:
+        name, _, value = entry.partition(":")
+        if name:
+            tags[name] = value
+    return _build_line(
+        indent_level=depth,
+        checkbox=_CHECKBOX_FOR_STATUS.get(task.status, " "),
+        title=task.text,
+        tags=tags,
+        dataview_tags=set(),
+    )
 
 
 # ---- record / private helpers ----------------------------------------------
@@ -471,6 +504,24 @@ def _coerce_date(value: str) -> date:
 
 def _is_emoji_key(name: str) -> bool:
     return any(emoji.is_emoji(c) for c in name)
+
+
+def _read_frontmatter(file: Path) -> str:
+    """Return the leading `--- ... ---` block verbatim, or empty string."""
+    try:
+        text = file.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    if i >= len(lines) or lines[i].strip() != "---":
+        return ""
+    for j in range(i + 1, len(lines)):
+        if lines[j].strip() == "---":
+            return "\n".join(lines[: j + 1])
+    return ""
 
 
 def _skip_frontmatter(lines: List[str]) -> int:

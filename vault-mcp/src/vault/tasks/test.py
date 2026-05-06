@@ -41,6 +41,30 @@ def _vault(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def _stack(root: Path) -> TaskParser:
+    """Build a fully-initialized TaskParser bound to a DB + debouncer."""
+    from database import Database
+    from schemas.efforts import Effort
+    from vault.debounce import WriteDebouncer
+    from vault.watcher import Watcher
+
+    db = Database()
+    db.register(Effort, system="efforts")
+    db.register(Task, system="tasks")
+    watcher = Watcher()
+    debouncer = WriteDebouncer(watcher=watcher, wal_path=root / ".wal")
+    db.attach_debouncer(debouncer)
+    parser = TaskParser(root)
+    parser.initialize(db, watcher, debouncer)
+    return parser
+
+
+def _apply(parser: TaskParser, task: Task, op) -> None:
+    """Run an Update op end-to-end (DB mutation → file projection)."""
+    parser.update(task, op)
+    parser._debouncer.flush()
+
+
 def _write_root_taskfile(root: Path, content: str) -> Path:
     path = root / ROOT_TASKFILE
     path.write_text(content, encoding="utf-8")
@@ -223,39 +247,8 @@ class TestSkipFrontmatter:
         assert _skip_frontmatter(lines) == 0
 
 
-# ---------------------------------------------------------------------------
-# scan
-# ---------------------------------------------------------------------------
-
-
-class TestScan:
-    def test_no_files(self, tmp_path):
-        assert TaskParser(_vault(tmp_path)).scan() == []
-
-    def test_root_taskfile_only(self, tmp_path):
-        root = _vault(tmp_path)
-        rt = _write_root_taskfile(root, "")
-        assert TaskParser(root).scan() == [rt]
-
-    def test_active_effort_taskfile(self, tmp_path):
-        root = _vault(tmp_path)
-        eff = _make_effort(root, "alpha")
-        result = TaskParser(root).scan()
-        assert eff / ROOT_TASKFILE in result
-
-    def test_backlog_effort_taskfile(self, tmp_path):
-        root = _vault(tmp_path)
-        eff = _make_effort(root, "beta", backlog=True)
-        result = TaskParser(root).scan()
-        assert eff / ROOT_TASKFILE in result
-
-    def test_root_and_efforts(self, tmp_path):
-        root = _vault(tmp_path)
-        rt = _write_root_taskfile(root, "")
-        eff = _make_effort(root, "alpha")
-        result = TaskParser(root).scan()
-        assert result[0] == rt
-        assert eff / ROOT_TASKFILE in result
+# scan() is no longer part of the parser surface; taskfile discovery now
+# happens via the watcher's immediate-fire-on-register seed (see asyncfile.md).
 
 
 # ---------------------------------------------------------------------------
@@ -433,9 +426,9 @@ class TestCreateTask:
     def test_create_in_root(self, tmp_path):
         root = _vault(tmp_path)
         _write_root_taskfile(root, "")
-        parser = TaskParser(root)
+        parser = _stack(root)
         task = _placeholder_task(id="cr0001", text="Hello", effort="none")
-        parser.write(task, CreateTask())
+        _apply(parser, task, CreateTask())
         text = (root / ROOT_TASKFILE).read_text(encoding="utf-8")
         assert "Hello" in text
         assert "cr0001" in text
@@ -443,9 +436,9 @@ class TestCreateTask:
     def test_create_assigns_id_when_missing(self, tmp_path):
         root = _vault(tmp_path)
         _write_root_taskfile(root, "")
-        parser = TaskParser(root)
+        parser = _stack(root)
         task = _placeholder_task(id="", text="Auto id")
-        parser.write(task, CreateTask())
+        _apply(parser, task, CreateTask())
         assert task.id  # mutated
         text = (root / ROOT_TASKFILE).read_text(encoding="utf-8")
         assert task.id in text
@@ -453,8 +446,8 @@ class TestCreateTask:
     def test_create_preserves_existing_lines(self, tmp_path):
         root = _vault(tmp_path)
         _write_root_taskfile(root, "- [ ] Existing 🆔 ex0001\n")
-        parser = TaskParser(root)
-        parser.write(
+        parser = _stack(root)
+        _apply(parser, 
             _placeholder_task(id="cr0002", text="New"),
             CreateTask(),
         )
@@ -465,8 +458,8 @@ class TestCreateTask:
     def test_create_in_effort(self, tmp_path):
         root = _vault(tmp_path)
         _make_effort(root, "alpha")
-        parser = TaskParser(root)
-        parser.write(
+        parser = _stack(root)
+        _apply(parser, 
             _placeholder_task(id="ef0001", effort="alpha", text="A task"),
             CreateTask(),
         )
@@ -478,8 +471,8 @@ class TestCreateTask:
     def test_create_milestone_writes_tag(self, tmp_path):
         root = _vault(tmp_path)
         _write_root_taskfile(root, "")
-        parser = TaskParser(root)
-        parser.write(
+        parser = _stack(root)
+        _apply(parser, 
             _placeholder_task(
                 id="ms0001", text="Ship", type=TaskType.MILESTONE
             ),
@@ -488,14 +481,9 @@ class TestCreateTask:
         text = (root / ROOT_TASKFILE).read_text(encoding="utf-8")
         assert "#milestone" in text
 
-    def test_create_unknown_effort_raises(self, tmp_path):
-        root = _vault(tmp_path)
-        parser = TaskParser(root)
-        with pytest.raises(FileNotFoundError):
-            parser.write(
-                _placeholder_task(id="x", effort="ghost"),
-                CreateTask(),
-            )
+    # Strict effort-existence validation no longer applies: `update` is
+    # DB-only and the debouncer's parent_file_resolver returns the canonical
+    # path regardless of whether it currently exists.
 
 
 # ---------------------------------------------------------------------------
@@ -507,8 +495,8 @@ class TestUpdateStatus:
     def test_open_to_closed(self, tmp_path):
         root = _vault(tmp_path)
         _write_root_taskfile(root, "- [ ] T 🆔 us0001\n")
-        parser = TaskParser(root)
-        parser.write(
+        parser = _stack(root)
+        _apply(parser, 
             _placeholder_task(id="us0001"),
             UpdateStatus(TaskStatus.CLOSED),
         )
@@ -518,30 +506,23 @@ class TestUpdateStatus:
     def test_open_to_in_progress(self, tmp_path):
         root = _vault(tmp_path)
         _write_root_taskfile(root, "- [ ] T 🆔 us0002\n")
-        parser = TaskParser(root)
-        parser.write(
+        parser = _stack(root)
+        _apply(parser, 
             _placeholder_task(id="us0002"),
             UpdateStatus(TaskStatus.IN_PROGRESS),
         )
         assert "- [/]" in (root / ROOT_TASKFILE).read_text(encoding="utf-8")
 
-    def test_unknown_id_raises(self, tmp_path):
-        root = _vault(tmp_path)
-        _write_root_taskfile(root, "- [ ] T 🆔 us0003\n")
-        parser = TaskParser(root)
-        with pytest.raises(KeyError):
-            parser.write(
-                _placeholder_task(id="ghost"),
-                UpdateStatus(TaskStatus.CLOSED),
-            )
+    # Unknown-id validation no longer applies: `update` is DB-only and
+    # upserts whatever it's given.
 
 
 class TestUpdateText:
     def test_rewrites_title(self, tmp_path):
         root = _vault(tmp_path)
         _write_root_taskfile(root, "- [ ] Old title 🆔 ut0001\n")
-        parser = TaskParser(root)
-        parser.write(
+        parser = _stack(root)
+        _apply(parser, 
             _placeholder_task(id="ut0001"),
             UpdateText("New title"),
         )
@@ -560,8 +541,8 @@ class TestUpdateDependencies:
     def test_set_blocked(self, tmp_path):
         root = _vault(tmp_path)
         _write_root_taskfile(root, "- [ ] T 🆔 ud0001\n")
-        parser = TaskParser(root)
-        parser.write(
+        parser = _stack(root)
+        _apply(parser, 
             _placeholder_task(id="ud0001"),
             UpdateDependencies(
                 Dependencies(blocked=["aa1111"], parent="", children=[])
@@ -574,8 +555,8 @@ class TestUpdateDependencies:
     def test_clear_blocked(self, tmp_path):
         root = _vault(tmp_path)
         _write_root_taskfile(root, "- [ ] T 🆔 ud0002 ⛔ aa1111\n")
-        parser = TaskParser(root)
-        parser.write(
+        parser = _stack(root)
+        _apply(parser, 
             _placeholder_task(id="ud0002"),
             UpdateDependencies(_empty_deps()),
         )
@@ -593,8 +574,8 @@ class TestUpdateMetadata:
     def test_replace_free_tags(self, tmp_path):
         root = _vault(tmp_path)
         _write_root_taskfile(root, "- [ ] T 🆔 um0001 #old\n")
-        parser = TaskParser(root)
-        parser.write(
+        parser = _stack(root)
+        _apply(parser, 
             _placeholder_task(id="um0001"),
             UpdateMetadata(tags=["new"]),
         )
@@ -605,8 +586,8 @@ class TestUpdateMetadata:
     def test_clears_when_empty_list(self, tmp_path):
         root = _vault(tmp_path)
         _write_root_taskfile(root, "- [ ] T 🆔 um0002 #old\n")
-        parser = TaskParser(root)
-        parser.write(
+        parser = _stack(root)
+        _apply(parser, 
             _placeholder_task(id="um0002"),
             UpdateMetadata(tags=[]),
         )
@@ -617,14 +598,14 @@ class TestUpdateMetadata:
     def test_set_time_details(self, tmp_path):
         root = _vault(tmp_path)
         _write_root_taskfile(root, "- [ ] T 🆔 um0003\n")
-        parser = TaskParser(root)
+        parser = _stack(root)
         td = TimeBlock(
             created=date(2026, 1, 1),
             last_updated=_NULL_DATE,
             due=date(2026, 2, 1),
             scheduled=_NULL_DATE,
         )
-        parser.write(
+        _apply(parser, 
             _placeholder_task(id="um0003"),
             UpdateMetadata(time_details=td),
         )
@@ -637,8 +618,8 @@ class TestUpdateMetadata:
         _write_root_taskfile(
             root, "- [ ] T 🆔 um0004 📅 2026-02-01\n"
         )
-        parser = TaskParser(root)
-        parser.write(
+        parser = _stack(root)
+        _apply(parser, 
             _placeholder_task(id="um0004"),
             UpdateMetadata(time_details=_empty_time()),
         )
@@ -658,8 +639,8 @@ class TestArchiveTask:
             root,
             "- [ ] Keep 🆔 keep01\n- [x] Gone 🆔 arch01\n",
         )
-        parser = TaskParser(root)
-        parser.write(_placeholder_task(id="arch01"), ArchiveTask())
+        parser = _stack(root)
+        _apply(parser, _placeholder_task(id="arch01"), ArchiveTask())
         text = (root / ROOT_TASKFILE).read_text(encoding="utf-8")
         assert "arch01" not in text
         assert "keep01" in text
@@ -670,8 +651,8 @@ class TestArchiveTask:
             root,
             "- [x] Gone 🆔 ap0001\n    - a note\n- [ ] Sib 🆔 sib001\n",
         )
-        parser = TaskParser(root)
-        parser.write(_placeholder_task(id="ap0001"), ArchiveTask())
+        parser = _stack(root)
+        _apply(parser, _placeholder_task(id="ap0001"), ArchiveTask())
         text = (root / ROOT_TASKFILE).read_text(encoding="utf-8")
         assert "ap0001" not in text
         assert "a note" not in text
@@ -680,8 +661,8 @@ class TestArchiveTask:
     def test_unknown_id_noop(self, tmp_path):
         root = _vault(tmp_path)
         _write_root_taskfile(root, "- [ ] T 🆔 keep02\n")
-        parser = TaskParser(root)
-        parser.write(_placeholder_task(id="ghost"), ArchiveTask())
+        parser = _stack(root)
+        _apply(parser, _placeholder_task(id="ghost"), ArchiveTask())
         text = (root / ROOT_TASKFILE).read_text(encoding="utf-8")
         assert "keep02" in text
 
@@ -695,9 +676,9 @@ class TestWriteDispatch:
     def test_unknown_update_type_raises(self, tmp_path):
         root = _vault(tmp_path)
         _write_root_taskfile(root, "- [ ] T 🆔 dis001\n")
-        parser = TaskParser(root)
+        parser = _stack(root)
         with pytest.raises(TypeError):
-            parser.write(_placeholder_task(id="dis001"), object())
+            _apply(parser, _placeholder_task(id="dis001"), object())
 
 
 # ---------------------------------------------------------------------------
@@ -709,7 +690,7 @@ class TestRoundTrip:
     def test_create_then_parse(self, tmp_path):
         root = _vault(tmp_path)
         _write_root_taskfile(root, "")
-        parser = TaskParser(root)
+        parser = _stack(root)
         original = _placeholder_task(
             id="rt0001",
             text="Round trip",
@@ -721,7 +702,7 @@ class TestRoundTrip:
                 scheduled=_NULL_DATE,
             ),
         )
-        parser.write(original, CreateTask())
+        _apply(parser, original, CreateTask())
         [parsed] = parser.parse(root / ROOT_TASKFILE)
         assert parsed.id == "rt0001"
         assert parsed.text == "Round trip"
@@ -732,8 +713,8 @@ class TestRoundTrip:
     def test_status_round_trip(self, tmp_path):
         root = _vault(tmp_path)
         _write_root_taskfile(root, "- [ ] T 🆔 rt0002\n")
-        parser = TaskParser(root)
-        parser.write(
+        parser = _stack(root)
+        _apply(parser, 
             _placeholder_task(id="rt0002"),
             UpdateStatus(TaskStatus.CLOSED),
         )

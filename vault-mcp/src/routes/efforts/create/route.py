@@ -32,23 +32,11 @@ def effort_create(body: CreateEffortRequest, app: App = Depends(get_app)) -> Eff
             status_code=400, detail=f"Effort '{name}' already exists"
         )
 
-    parser = app.effort_parser
-    folder = parser.vault_root / "efforts" / name
+    effort = _new_effort(name)
     try:
-        parser.write(_new_effort(name), CreateEffort())
-    except FileExistsError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        app.effort_parser.update(effort, CreateEffort())
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"scaffold failed: {e}")
-
-    parsed = parser.parse(folder)
-    if not parsed:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Effort '{name}' scaffolded but not recognized after parse",
-        )
-    [effort] = parsed
-    app.db.update(effort)
+        raise HTTPException(status_code=400, detail=f"create failed: {e}")
     return effort
 
 

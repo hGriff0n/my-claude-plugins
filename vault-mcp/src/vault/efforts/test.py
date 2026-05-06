@@ -38,49 +38,6 @@ def _vault(tmp_path: Path) -> Path:
     return tmp_path
 
 
-class TestScan:
-    def test_no_efforts_dir(self, tmp_path):
-        assert EffortParser(tmp_path).scan() == []
-
-    def test_empty_efforts_dir(self, tmp_path):
-        assert EffortParser(_vault(tmp_path)).scan() == []
-
-    def test_active_effort(self, tmp_path):
-        root = _vault(tmp_path)
-        eff = _make_effort(root, "efforts", "alpha")
-        assert EffortParser(root).scan() == [eff]
-
-    def test_backlog_effort(self, tmp_path):
-        root = _vault(tmp_path)
-        eff = _make_effort(root, "efforts", "__backlog", "old")
-        assert EffortParser(root).scan() == [eff]
-
-    def test_active_and_backlog(self, tmp_path):
-        root = _vault(tmp_path)
-        a = _make_effort(root, "efforts", "alpha")
-        b = _make_effort(root, "efforts", "__backlog", "beta")
-        assert EffortParser(root).scan() == [a, b]
-
-    def test_folder_missing_required_file_skipped(self, tmp_path):
-        root = _vault(tmp_path)
-        d = root / "efforts" / "incomplete"
-        d.mkdir()
-        (d / "CLAUDE.md").write_text("c")
-        assert EffortParser(root).scan() == []
-
-    def test_nested_below_one_level_not_an_effort(self, tmp_path):
-        root = _vault(tmp_path)
-        outer = _make_effort(root, "efforts", "alpha", body="# Alpha\n")
-        _make_effort(root, "efforts", "alpha", "scratch", body="# Scratch\n")
-        # Only "alpha" is an effort; the nested "scratch" is ignored.
-        assert EffortParser(root).scan() == [outer]
-
-    def test_nested_backlog_not_recursed(self, tmp_path):
-        root = _vault(tmp_path)
-        _make_effort(root, "efforts", "__backlog", "2025", "old")
-        assert EffortParser(root).scan() == []
-
-
 class TestParse:
     def test_active_status_and_path(self, tmp_path):
         root = _vault(tmp_path)
@@ -158,199 +115,106 @@ class TestParse:
         assert EffortParser(root).parse(d) == []
 
 
-class TestCreate:
-    def _capture_obsidian(self):
+def _placeholder(name: str, path: str | None = None):
+    from schemas.efforts import DisplayDetails, Effort, TaskStats
+    from schemas.time import TimeBlock
+
+    return Effort(
+        name=name,
+        path=Path(path or f"efforts/{name}"),
+        status=EffortStatus.ACTIVE,
+        description="",
+        time_details=TimeBlock(
+            created=_NULL_DATE, last_updated=_NULL_DATE,
+            due=_NULL_DATE, scheduled=_NULL_DATE,
+        ),
+        display=DisplayDetails(
+            task_stats=TaskStats(num_by_status={s.value: 0 for s in TaskStatus})
+        ),
+    )
+
+
+class TestWriteScaffold:
+    """`write(folder, [effort])` scaffolds a new effort when the folder is missing."""
+
+    def _stub_obsidian(self):
         calls = []
 
         def fake(*args):
             calls.append(args)
-            # Materialize the file so subsequent operations see it.
-            rel = args[1]
-            content = args[2] if len(args) > 2 else ""
-            target_path = self._vault / rel
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            target_path.write_text(content, encoding="utf-8")
 
             class Result:
                 returncode = 0
                 stderr = ""
-                stdout = f"Created: {rel}"
+                stdout = ""
 
             return Result()
 
         return calls, fake
 
-    def test_create_scaffolds_three_files(self, tmp_path):
+    def test_scaffolds_three_files(self, tmp_path):
         root = _vault(tmp_path)
-        self._vault = root
-        calls, fake = self._capture_obsidian()
+        target = root / "efforts" / "alpha"
+        calls, fake = self._stub_obsidian()
         with patch("vault.efforts.parser.obsidian_cli", side_effect=fake):
-            from schemas.efforts import (
-                DisplayDetails,
-                Effort,
-                TaskStats,
-            )
-            from schemas.time import TimeBlock
-
-            placeholder = Effort(
-                name="alpha",
-                path=Path("efforts/alpha"),
-                status=EffortStatus.ACTIVE,
-                description="",
-                time_details=TimeBlock(
-                    created=_NULL_DATE,
-                    last_updated=_NULL_DATE,
-                    due=_NULL_DATE,
-                    scheduled=_NULL_DATE,
-                ),
-                display=DisplayDetails(
-                    task_stats=TaskStats(num_by_status={s.value: 0 for s in TaskStatus})
-                ),
-            )
-            EffortParser(root).write(placeholder, CreateEffort())
-
-        created = sorted(call[1] for call in calls)
-        assert created == sorted(f"efforts/alpha/{f}" for f in REQUIRED_FILES)
-        for f in REQUIRED_FILES:
-            assert (root / "efforts" / "alpha" / f).exists()
-
-    def test_create_rejects_existing_effort(self, tmp_path):
-        root = _vault(tmp_path)
-        _make_effort(root, "efforts", "alpha", body="# Alpha\n")
-        from schemas.efforts import DisplayDetails, Effort, TaskStats
-        from schemas.time import TimeBlock
-
-        placeholder = Effort(
-            name="alpha",
-            path=Path("efforts/alpha"),
-            status=EffortStatus.ACTIVE,
-            description="",
-            time_details=TimeBlock(
-                created=_NULL_DATE, last_updated=_NULL_DATE,
-                due=_NULL_DATE, scheduled=_NULL_DATE,
-            ),
-            display=DisplayDetails(
-                task_stats=TaskStats(num_by_status={s.value: 0 for s in TaskStatus})
-            ),
+            EffortParser(root).write(target, [_placeholder("alpha")])
+        path_args = sorted(
+            arg[len("path="):] for call in calls for arg in call
+            if isinstance(arg, str) and arg.startswith("path=")
         )
-        with pytest.raises(FileExistsError):
-            EffortParser(root).write(placeholder, CreateEffort())
+        assert path_args == ["efforts/alpha/00 README", "efforts/alpha/01 TASKS", "efforts/alpha/CLAUDE"]
+        assert target.is_dir()
 
-    def test_create_nests_existing_placeholder(self, tmp_path):
+    def test_nests_existing_placeholder(self, tmp_path):
         root = _vault(tmp_path)
-        self._vault = root
-        # Pre-existing placeholder folder with scratch content
-        placeholder_dir = root / "efforts" / "alpha"
-        placeholder_dir.mkdir(parents=True)
-        (placeholder_dir / "scratch.md").write_text("notes", encoding="utf-8")
-
-        calls, fake = self._capture_obsidian()
+        target = root / "efforts" / "alpha"
+        target.mkdir(parents=True)
+        (target / "scratch.md").write_text("notes", encoding="utf-8")
+        calls, fake = self._stub_obsidian()
         with patch("vault.efforts.parser.obsidian_cli", side_effect=fake):
-            from schemas.efforts import DisplayDetails, Effort, TaskStats
-            from schemas.time import TimeBlock
+            EffortParser(root).write(target, [_placeholder("alpha")])
+        assert (target / "alpha" / "scratch.md").exists()
 
-            placeholder = Effort(
-                name="alpha",
-                path=Path("efforts/alpha"),
-                status=EffortStatus.ACTIVE,
-                description="",
-                time_details=TimeBlock(
-                    created=_NULL_DATE, last_updated=_NULL_DATE,
-                    due=_NULL_DATE, scheduled=_NULL_DATE,
-                ),
-                display=DisplayDetails(
-                    task_stats=TaskStats(num_by_status={s.value: 0 for s in TaskStatus})
-                ),
-            )
-            EffortParser(root).write(placeholder, CreateEffort())
-
-        assert (root / "efforts" / "alpha" / "alpha" / "scratch.md").exists()
-        for f in REQUIRED_FILES:
-            assert (root / "efforts" / "alpha" / f).exists()
-
-    def test_create_moves_ideas_placeholder(self, tmp_path):
+    def test_moves_ideas_placeholder(self, tmp_path):
         root = _vault(tmp_path)
-        self._vault = root
+        target = root / "efforts" / "alpha"
         ideas_dir = root / "efforts" / "__ideas" / "alpha"
         ideas_dir.mkdir(parents=True)
         (ideas_dir / "draft.md").write_text("draft", encoding="utf-8")
-
-        calls, fake = self._capture_obsidian()
+        calls, fake = self._stub_obsidian()
         with patch("vault.efforts.parser.obsidian_cli", side_effect=fake):
-            from schemas.efforts import DisplayDetails, Effort, TaskStats
-            from schemas.time import TimeBlock
-
-            placeholder = Effort(
-                name="alpha",
-                path=Path("efforts/alpha"),
-                status=EffortStatus.ACTIVE,
-                description="",
-                time_details=TimeBlock(
-                    created=_NULL_DATE, last_updated=_NULL_DATE,
-                    due=_NULL_DATE, scheduled=_NULL_DATE,
-                ),
-                display=DisplayDetails(
-                    task_stats=TaskStats(num_by_status={s.value: 0 for s in TaskStatus})
-                ),
-            )
-            EffortParser(root).write(placeholder, CreateEffort())
-
-        assert (root / "efforts" / "alpha" / "alpha" / "draft.md").exists()
+            EffortParser(root).write(target, [_placeholder("alpha")])
+        assert (target / "alpha" / "draft.md").exists()
         assert not ideas_dir.exists()
 
 
-class TestMove:
-    def _placeholder(self, name: str):
-        from schemas.efforts import DisplayDetails, Effort, TaskStats
-        from schemas.time import TimeBlock
-
-        return Effort(
-            name=name,
-            path=Path(f"efforts/{name}"),
-            status=EffortStatus.ACTIVE,
-            description="",
-            time_details=TimeBlock(
-                created=_NULL_DATE, last_updated=_NULL_DATE,
-                due=_NULL_DATE, scheduled=_NULL_DATE,
-            ),
-            display=DisplayDetails(
-                task_stats=TaskStats(num_by_status={s.value: 0 for s in TaskStatus})
-            ),
-        )
+class TestWriteRelocate:
+    """`write(target, [effort])` relocates an existing folder to the new path."""
 
     def test_active_to_backlog(self, tmp_path):
         root = _vault(tmp_path)
         _make_effort(root, "efforts", "alpha", body="# Alpha\n")
-        EffortParser(root).write(self._placeholder("alpha"), MoveEffort(target="backlog"))
+        target = root / "efforts" / "__backlog" / "alpha"
+        EffortParser(root).write(target, [_placeholder("alpha", "efforts/__backlog/alpha")])
         assert not (root / "efforts" / "alpha" / "CLAUDE.md").exists()
-        assert (root / "efforts" / "__backlog" / "alpha" / "CLAUDE.md").exists()
+        assert (target / "CLAUDE.md").exists()
 
     def test_backlog_to_active(self, tmp_path):
         root = _vault(tmp_path)
         _make_effort(root, "efforts", "__backlog", "alpha", body="# Alpha\n")
-        EffortParser(root).write(self._placeholder("alpha"), MoveEffort(target="active"))
-        assert (root / "efforts" / "alpha" / "CLAUDE.md").exists()
+        target = root / "efforts" / "alpha"
+        EffortParser(root).write(target, [_placeholder("alpha")])
+        assert (target / "CLAUDE.md").exists()
         assert not (root / "efforts" / "__backlog" / "alpha").exists()
 
-    def test_active_to_active_noop(self, tmp_path):
-        root = _vault(tmp_path)
-        _make_effort(root, "efforts", "alpha", body="# Alpha\n")
-        EffortParser(root).write(self._placeholder("alpha"), MoveEffort(target="active"))
-        assert (root / "efforts" / "alpha" / "CLAUDE.md").exists()
 
-    def test_archive_active(self, tmp_path):
+class TestWriteArchive:
+    def test_empty_elements_removes_existing_folder(self, tmp_path):
         root = _vault(tmp_path)
-        _make_effort(root, "efforts", "alpha", body="# Alpha\n")
-        EffortParser(root).write(self._placeholder("alpha"), MoveEffort(target="archive"))
-        assert not (root / "efforts" / "alpha").exists()
+        folder = _make_effort(root, "efforts", "alpha", body="# Alpha\n")
+        EffortParser(root).write(folder, [])
+        assert not folder.exists()
 
-    def test_archive_backlog(self, tmp_path):
+    def test_empty_elements_missing_folder_noop(self, tmp_path):
         root = _vault(tmp_path)
-        _make_effort(root, "efforts", "__backlog", "alpha", body="# Alpha\n")
-        EffortParser(root).write(self._placeholder("alpha"), MoveEffort(target="archive"))
-        assert not (root / "efforts" / "__backlog" / "alpha").exists()
-
-    def test_unknown_effort_raises(self, tmp_path):
-        root = _vault(tmp_path)
-        with pytest.raises(FileNotFoundError):
-            EffortParser(root).write(self._placeholder("ghost"), MoveEffort(target="backlog"))
+        EffortParser(root).write(root / "efforts" / "ghost", [])  # no error

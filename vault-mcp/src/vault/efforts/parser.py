@@ -8,11 +8,12 @@ system (`specs/systems/efforts/readme.md`). An effort is a folder under
 
 from __future__ import annotations
 
+import logging
 import shutil
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal, Optional, Union
+from typing import Any, List, Literal, Optional, Union
 
 import yaml
 
@@ -20,7 +21,12 @@ from schemas.efforts import DisplayDetails, Effort, EffortStatus, TaskStats
 from schemas.tasks import TaskStatus
 from schemas.time import TimeBlock
 from utils.obsidian import obsidian_cli
+from vault.parser import Parser
+from vault.watcher import EventType, WatchCriterion, WatcherHandle, active_origin
 
+log = logging.getLogger(__name__)
+
+SYSTEM_NAME = "efforts"
 EFFORTS_DIR = "efforts"
 BACKLOG_DIR = "__backlog"
 IDEAS_DIR = "__ideas"
@@ -99,9 +105,15 @@ def _coerce_date(value: Any) -> Optional[date]:
         return None
 
 
+EffortParserInterface = Parser[Effort, Update]
 class EffortParser:
     def __init__(self, vault_root: Path):
         self.vault_root = Path(vault_root)
+        self._db: Any = None
+        self._watcher: Any = None
+        self._debouncer: Any = None
+        self._task_parser: Any = None
+        self._effort_handles: dict[Path, WatcherHandle] = {}
 
     @property
     def _efforts_root(self) -> Path:
@@ -111,22 +123,84 @@ class EffortParser:
     def _backlog_root(self) -> Path:
         return self._efforts_root / BACKLOG_DIR
 
-    # ---- scan ----
+    def attach_task_parser(self, task_parser: Any) -> None:
+        """Wire up the task parser so parse() can register task watchers."""
+        self._task_parser = task_parser
 
-    def scan(self) -> list[Path]:
-        results: list[Path] = []
-        if not self._efforts_root.is_dir():
-            return results
-        for child in sorted(self._efforts_root.iterdir()):
-            if child.name == BACKLOG_DIR:
+    # ---- initialize ----
+
+    def initialize(self, db: Any, watcher: Any, debouncer: Any) -> None:
+        self._db = db
+        self._watcher = watcher
+        self._debouncer = debouncer
+        debouncer.register_system(
+            name=SYSTEM_NAME,
+            lag=timedelta(0),
+            parent_file_resolver=self._parent_file,
+            writer=self.write,
+            elements_for_file=self._elements_for_file,
+            models={Effort.__name__: Effort},
+        )
+
+        events = frozenset({EventType.CREATE, EventType.MODIFY, EventType.DELETE})
+        self._efforts_root.mkdir(parents=True, exist_ok=True)
+        watcher.register(
+            WatchCriterion(target=self._efforts_root, events=events),
+            self._on_root_event,
+        )
+        # Backlog root may not exist yet; register lazily on first appearance.
+        watcher.register(
+            WatchCriterion(target=self._backlog_root, events=events),
+            self._on_root_event,
+        )
+
+    def _parent_file(self, effort: Effort) -> Path:
+        return self.vault_root / effort.path
+
+    def _elements_for_file(self, folder: Path) -> List[Effort]:
+        try:
+            rel = folder.relative_to(self.vault_root).as_posix()
+        except ValueError:
+            return []
+        return [
+            e for e in self._db.query('SELECT * FROM "effort"')
+            if e.path.as_posix() == rel
+        ]
+
+    def _on_root_event(
+        self, file: Path, event: EventType, handle: WatcherHandle,
+    ) -> None:
+        if event == EventType.DELETE or not file.is_dir():
+            return
+        for child in sorted(file.iterdir()):
+            if child.name in (BACKLOG_DIR, IDEAS_DIR):
                 continue
             if _is_effort_folder(child):
-                results.append(child)
-        if self._backlog_root.is_dir():
-            for child in sorted(self._backlog_root.iterdir()):
-                if _is_effort_folder(child):
-                    results.append(child)
-        return results
+                self._register_effort(child)
+
+    def _register_effort(self, folder: Path) -> None:
+        events = frozenset({EventType.MODIFY, EventType.DELETE})
+        handle = self._watcher.register(
+            WatchCriterion(target=folder, events=events),
+            self._on_effort_event,
+        )
+        self._effort_handles[folder] = handle
+
+    def _on_effort_event(
+        self, file: Path, event: EventType, handle: WatcherHandle,
+    ) -> None:
+        if event == EventType.DELETE:
+            elements = self._elements_for_file(file)
+            for effort in elements:
+                self._db.delete(effort, origin=handle)
+            self._effort_handles.pop(file, None)
+            return
+        for effort in self.parse(file):
+            self._db.update(effort, origin=handle)
+            if self._task_parser is not None:
+                taskfile = file / "01 TASKS.md"
+                if taskfile.is_file():
+                    self._task_parser.register_taskfile(taskfile)
 
     # ---- parse ----
 
@@ -178,25 +252,68 @@ class EffortParser:
             )
         ]
 
-    # ---- write ----
+    # ---- update (DB only) ----
 
-    def write(self, effort: Effort, update: Update) -> None:
-        if isinstance(update, CreateEffort):
-            self._create(effort.name)
+    def update(self, effort: Effort, op: Update) -> None:
+        if isinstance(op, CreateEffort):
+            self._db.update(effort, origin=active_origin())
             return
-        if isinstance(update, MoveEffort):
-            self._move(effort.name, update.target)
+        if isinstance(op, MoveEffort):
+            new_path = self._target_path(effort.name, op.target).relative_to(
+                self.vault_root,
+            )
+            effort.path = Path(new_path.as_posix())
+            effort.status = (
+                EffortStatus.BACKLOG if op.target == "backlog"
+                else EffortStatus.ACTIVE
+            )
+            if op.target == "archive":
+                self._db.delete(effort, origin=active_origin())
+            else:
+                self._db.update(effort, origin=active_origin())
             return
-        raise TypeError(f"Unknown Update: {update!r}")
+        raise TypeError(f"Unknown Update: {op!r}")
 
-    def _create(self, name: str) -> None:
-        target = self._efforts_root / name
-        backlog = self._backlog_root / name
-        if _is_effort_folder(target) or _is_effort_folder(backlog):
-            raise FileExistsError(f"Effort already exists: {name}")
+    # ---- write (DB → file projection) ----
 
-        ideas_placeholder = self._efforts_root / IDEAS_DIR / name
-        nested_dest = target / name
+    def write(self, file: Path, elements: List[Effort]) -> None:
+        if not elements:
+            if file.is_dir():
+                shutil.rmtree(file)
+            return
+        if len(elements) > 1:
+            raise ValueError(
+                f"Multiple efforts projected to one folder: {file}",
+            )
+        [effort] = elements
+        target = self.vault_root / effort.path
+        if file != target:
+            log.warning("write target %s != effort path %s", file, target)
+        if not _is_effort_folder(target):
+            self._scaffold(target)
+            return
+        # Already a complete effort folder at the right location — nothing to do.
+
+    def _target_path(self, name: str, target: str) -> Path:
+        if target == "backlog":
+            return self._backlog_root / name
+        return self._efforts_root / name
+
+    def _scaffold(self, target: Path) -> None:
+        backlog_alt = self._backlog_root / target.name
+        active_alt = self._efforts_root / target.name
+        existing: Optional[Path] = None
+        if _is_effort_folder(active_alt) and active_alt != target:
+            existing = active_alt
+        elif _is_effort_folder(backlog_alt) and backlog_alt != target:
+            existing = backlog_alt
+        if existing is not None:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(existing), str(target))
+            return
+
+        ideas_placeholder = self._efforts_root / IDEAS_DIR / target.name
+        nested_dest = target / target.name
 
         if target.exists() and not _is_effort_folder(target):
             entries = [e for e in target.iterdir() if e != nested_dest]
@@ -218,34 +335,11 @@ class EffortParser:
         ]
         for template, filename in templates:
             rel = (target / filename).relative_to(self.vault_root).as_posix()
-            res = obsidian_cli("create", f"template={template_base}/{template}", f"path={rel}")
+            res = obsidian_cli(
+                "create", f"template={template_base}/{template}", f"path={rel}",
+            )
             if res.returncode != 0:
                 raise RuntimeError(
                     f"obsidian_cli create failed for {rel}: {res.stderr.strip()}"
                 )
 
-    def _move(self, name: str, target: MoveTarget) -> None:
-        active_path = self._efforts_root / name
-        backlog_path = self._backlog_root / name
-
-        if _is_effort_folder(active_path):
-            current = active_path
-            current_state: MoveTarget = "active"
-        elif _is_effort_folder(backlog_path):
-            current = backlog_path
-            current_state = "backlog"
-        else:
-            raise FileNotFoundError(f"Effort not found: {name}")
-
-        if target == current_state:
-            return
-
-        if target == "active":
-            shutil.move(str(current), str(active_path))
-        elif target == "backlog":
-            self._backlog_root.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(current), str(backlog_path))
-        elif target == "archive":
-            shutil.rmtree(current)
-        else:
-            raise ValueError(f"Unknown move target: {target}")
