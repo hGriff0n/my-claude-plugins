@@ -10,12 +10,14 @@ from fastapi import HTTPException
 
 from database import Database
 from vault.efforts.parser import EffortParser
+from vault.tasks.parser import TaskParser
 
 
 @dataclass
 class App:
     db: Database
     effort_parser: EffortParser
+    task_parser: TaskParser
 
 
 _app: App | None = None

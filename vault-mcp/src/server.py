@@ -24,8 +24,10 @@ from database import Database
 from routes.deps import App, set_app
 from routes.routes import router as api_router
 from schemas.efforts import Effort
+from schemas.tasks import Task
 from utils.obsidian import obsidian_cli
 from vault.efforts.parser import EffortParser
+from vault.tasks.parser import TaskParser
 
 VAULT_INIT_RETRY_SECONDS = 30
 
@@ -81,6 +83,15 @@ def _seed_efforts(db: Database, parser: EffortParser) -> None:
     log.info("Seeded %d efforts", count)
 
 
+def _seed_tasks(db: Database, parser: TaskParser) -> None:
+    count = 0
+    for taskfile in parser.scan():
+        for task in parser.parse(taskfile):
+            db.update(task)
+            count += 1
+    log.info("Seeded %d efforts", count)
+
+
 def _initialize_vault(db: Database) -> bool:
     """Probe Obsidian, register tables, and seed the database."""
     with _state_lock:
@@ -97,7 +108,11 @@ def _initialize_vault(db: Database) -> bool:
         effort_parser = EffortParser(vault_root)
         _seed_efforts(db, effort_parser)
 
-        set_app(App(db=db, effort_parser=effort_parser))
+        db.register(Task, system="Tasks")
+        task_parser = TaskParser(effort_parser)
+        _seed_tasks(db, task_parser)
+
+        set_app(App(db=db, effort_parser=effort_parser, task_parser=task_parser))
 
         _state["vault_root"] = vault_root
         _state["initialized"] = True

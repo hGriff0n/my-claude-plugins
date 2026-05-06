@@ -103,9 +103,9 @@ Update = Union[
 
 
 class TaskParser:
-    def __init__(self, vault_root: Path):
-        self.vault_root = Path(vault_root)
-        self._efforts = EffortParser(self.vault_root)
+    def __init__(self, effort_parser: EffortParser):
+        self._efforts = effort_parser
+        self.vault_root = self._efforts.vault_root
 
     def scan(self) -> List[Path]:
         results: List[Path] = []
