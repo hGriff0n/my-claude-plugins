@@ -210,14 +210,15 @@ class EffortParser:
         else:
             target.mkdir(parents=True, exist_ok=True)
 
+        template_base = "newnotes/efforts"
         templates = [
-            ("efforts/claude", "CLAUDE.md"),
-            ("efforts/readme", "00 README.md"),
-            ("efforts/taskfile", "01 TASKS.md"),
+            ("claude", "CLAUDE"),
+            ("readme", "00 README"),
+            ("taskfile", "01 TASKS"),
         ]
         for template, filename in templates:
             rel = (target / filename).relative_to(self.vault_root).as_posix()
-            res = obsidian_cli("create", f"template={template}", f'path="{rel}"')
+            res = obsidian_cli("create", f"template={template_base}/{template}", f"path={rel}")
             if res.returncode != 0:
                 raise RuntimeError(
                     f"obsidian_cli create failed for {rel}: {res.stderr.strip()}"

@@ -76,7 +76,7 @@ def _seed_efforts(db: Database, parser: EffortParser) -> None:
     count = 0
     for folder in parser.scan():
         for effort in parser.parse(folder):
-            db.update(effort, effort)
+            db.update(effort)
             count += 1
     log.info("Seeded %d efforts", count)
 
@@ -97,7 +97,7 @@ def _initialize_vault(db: Database) -> bool:
         effort_parser = EffortParser(vault_root)
         _seed_efforts(db, effort_parser)
 
-        set_app(App(db=db, effort_parser=effort_parser, api_router=api_router))
+        set_app(App(db=db, effort_parser=effort_parser))
 
         _state["vault_root"] = vault_root
         _state["initialized"] = True
