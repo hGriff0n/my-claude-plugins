@@ -8,10 +8,13 @@ from pydantic import BaseModel
 from schemas.time import TimeBlock
 
 
-# Milestones are tasks internally but aren't stored as such in obsidian
+# Milestones are tasks internally but aren't stored as such in obsidian.
+# TASKFILE is an ephemeral wrapper for whole-file rendering — it is not
+# persisted to the database.
 class TaskType(str, Enum):
     MILESTONE = "MILESTONE"
     TASK = "TASK"
+    TASKFILE = "TASKFILE"
 
 
 class TaskStatus(str, Enum):
