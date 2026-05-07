@@ -36,7 +36,12 @@ A taskfile is the unit of scan; individual tasks are extracted by `parse`.
     - **Hashtag**: `#name` → flag tag with empty value; `#name:value` → tag with value.
     - **Dataview**: `[name::value]` or `(name::value)` → tag with value, name added to `dataview_tags`. Tags `estimate`, `actual`, `effort` are always re-rendered as dataview on write regardless of original syntax.
   - `id` ← `tags["id"]` if present (any of the three syntaxes); if absent, generated and written back via `update_id`.
-  - `type` ← `MILESTONE` if the task is under a milestones heading or carries a `milestone` tag, else `TASK`.
+  - `type` ← `MILESTONE` if the line is an L4 heading (`#### …`), or — for back-compat — if the task is under a milestones heading or carries a `milestone` tag; else `TASK`.
+
+  In addition to `- [ ]` task lines, the parser also recognises:
+
+  - **Milestone headings (`#### text`)**: parsed as a MILESTONE-type task. The line's metadata tail (everything after the heading text) is parsed with the same emoji/hashtag/dataview tokeniser used for task lines. Missing `id` tags are generated and written back. A milestone heading is the parent of every subsequent unindented `- [ ]` task until the next heading (of any level) or end of file. Nested children continue to parent on their enclosing task. On write, MILESTONE tasks are always projected as `#### text <tags>` lines, never as `- [ ]` with a `#milestone` tag.
+  - **TASKFILE wrapper (ephemeral)**: at write time the parser builds an in-memory TASKFILE-typed task whose `notes` are the file's frontmatter lines (one note per non-empty line) and whose `children` are the parentless tasks in the file. The wrapper is not persisted to the database; it exists only to drive a uniform recursive emit of the file body.
   - `status` ← from the checkbox glyph alone: `[ ]` → `OPEN`, `[x]` → `CLOSED`, `[/]` → `IN_PROGRESS`, `[-]` → cancelled. `BLOCKED` is derived at the API mapping layer when a `blocked` tag with a non-empty value is present.
   - `text` ← the title portion (task line with checkbox prefix and metadata tail stripped).
   - `effort` ← derived from the file path: the effort folder name, or `"none"` for the root taskfile.

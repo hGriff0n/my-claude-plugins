@@ -34,7 +34,7 @@ _NULL_DATE = date.min
 # Tags that carry model-field semantics rather than appearing in `Task.tags`.
 _RESERVED_TAGS = frozenset({
     "id", "due", "scheduled", "created", "completed", "blocked",
-    "estimate", "actual", "effort",
+    "estimate", "actual", "effort", "milestone",
 })
 
 _CHECKBOX_STATUS = {
@@ -53,6 +53,7 @@ _CHECKBOX_FOR_STATUS = {
 }
 
 _TASK_RE = re.compile(r"^(\s*)- \[(.)\] (.+)$")
+_MILESTONE_HEADING_RE = re.compile(r"^####(?!#)\s+(.+)$")
 
 _known_emoji_alt = "|".join(re.escape(e) for e in EMOJI_TO_TAG)
 _DATAVIEW_FULL_RE = re.compile(r"[(\[]\s*(\w[\w\s]*?)\s*::\s*(.*?)\s*[)\]]")
@@ -252,23 +253,18 @@ class TaskParser:
     def write(self, file: Path, elements: List[Task]) -> None:
         """Project tasks to disk by rewriting the taskfile body.
 
-        Existing frontmatter is preserved as-is — this is a transitional
-        carve-out pending the TASKFILE-type Task model that will store
-        frontmatter (and section headers as MILESTONE tasks) in the DB so
-        the entire file can be rebuilt purely from elements. Once that
-        lands, frontmatter preservation moves into the element list.
+        Builds an ephemeral TASKFILE wrapper from `file`'s frontmatter and
+        the parentless `elements` to drive a uniform recursive emit.
+        Frontmatter is read from disk because TASKFILE tasks aren't
+        persisted in the DB.
         """
         if not elements and not file.exists():
             return
         file.parent.mkdir(parents=True, exist_ok=True)
 
-        frontmatter = _read_frontmatter(file) if file.is_file() else ""
-        lines: List[str] = []
-        if frontmatter:
-            lines.append(frontmatter.rstrip("\n"))
-            lines.append("")
-        lines.append("# Tasks")
-        lines.append("")
+        frontmatter_notes = (
+            _frontmatter_to_notes(file) if file.is_file() else []
+        )
 
         by_id = {t.id: t for t in elements}
         children_by_parent: Dict[str, List[Task]] = {}
@@ -280,12 +276,28 @@ class TaskParser:
             else:
                 roots.append(task)
 
+        lines: List[str] = []
+
         def emit(task: Task, depth: int) -> None:
+            if task.type == TaskType.MILESTONE:
+                if lines and lines[-1] != "":
+                    lines.append("")
+                lines.append(_render_milestone_line(task))
+                lines.append("")
+                for child in children_by_parent.get(task.id, []):
+                    emit(child, 0)
+                return
             lines.append(_render_task_line(task, depth))
             for note in task.notes:
                 lines.append("    " * (depth + 1) + "- " + note)
             for child in children_by_parent.get(task.id, []):
                 emit(child, depth + 1)
+
+        if frontmatter_notes:
+            lines.append("---")
+            lines.extend(frontmatter_notes)
+            lines.append("---")
+            lines.append("")
 
         for task in roots:
             emit(task, 0)
@@ -300,6 +312,7 @@ class TaskParser:
         records: List[_Record] = []
         stack: List[_Record] = []
         section = ""
+        current_milestone: Optional[_Record] = None
         wrote_back = False
 
         for i in range(body_start, len(lines)):
@@ -308,9 +321,33 @@ class TaskParser:
             if not stripped:
                 continue
             if stripped.startswith("#") and not stripped.startswith("#["):
+                ms = _MILESTONE_HEADING_RE.match(stripped)
+                if ms:
+                    title, tags, dataview_tags = _split_tags(ms.group(1))
+                    if not tags.get("id"):
+                        tags["id"] = generate_task_id()
+                        lines[i] = _build_milestone_heading(
+                            title, tags, dataview_tags,
+                        )
+                        wrote_back = True
+                    rec = _Record(
+                        indent=-1,
+                        checkbox="",
+                        title=title,
+                        tags=tags,
+                        dataview_tags=dataview_tags,
+                        section=section,
+                        parent=None,
+                        type=TaskType.MILESTONE,
+                    )
+                    records.append(rec)
+                    current_milestone = rec
+                    stack.clear()
+                    continue
                 hashes = len(stripped) - len(stripped.lstrip("#"))
                 section = stripped[hashes:].strip()
                 stack.clear()
+                current_milestone = None
                 continue
             if not stripped.startswith("- [") or stripped.startswith("- [["):
                 continue
@@ -329,8 +366,14 @@ class TaskParser:
 
             while stack and stack[-1].indent >= indent:
                 stack.pop()
-            parent = stack[-1] if stack else None
+            if stack:
+                parent = stack[-1]
+            elif indent == 0 and current_milestone is not None:
+                parent = current_milestone
+            else:
+                parent = None
 
+            is_milestone_tag = "milestone" in tags or "milestone" in section.lower()
             rec = _Record(
                 indent=indent,
                 checkbox=checkbox,
@@ -339,6 +382,7 @@ class TaskParser:
                 dataview_tags=dataview_tags,
                 section=section,
                 parent=parent,
+                type=TaskType.MILESTONE if is_milestone_tag else TaskType.TASK,
             )
             records.append(rec)
             stack.append(rec)
@@ -386,12 +430,12 @@ class TaskParser:
         blocked_value = tags.get("blocked", "")
         blocked = [b.strip() for b in blocked_value.split(",") if b.strip()]
 
-        if blocked:
+        if rec.type == TaskType.MILESTONE:
+            status = TaskStatus.OPEN
+        elif blocked:
             status = TaskStatus.BLOCKED
         else:
             status = _CHECKBOX_STATUS.get(rec.checkbox, TaskStatus.OPEN)
-
-        is_milestone = "milestone" in tags or "milestone" in rec.section.lower()
 
         free_tags = [
             f"{name}:{value}" if value else name
@@ -408,7 +452,7 @@ class TaskParser:
 
         return Task(
             id=tags["id"],
-            type=TaskType.MILESTONE if is_milestone else TaskType.TASK,
+            type=rec.type,
             status=status,
             text=rec.title,
             effort=effort_name,
@@ -451,7 +495,7 @@ class TaskParser:
         return "none"
 
 
-def _render_task_line(task: Task, depth: int) -> str:
+def _build_meta_tags(task: Task) -> Dict[str, str]:
     tags: Dict[str, str] = {"id": task.id}
     td = task.time_details
     for fld in ("created", "due", "scheduled"):
@@ -460,19 +504,54 @@ def _render_task_line(task: Task, depth: int) -> str:
             tags[fld] = value.isoformat()
     if task.dependencies.blocked:
         tags["blocked"] = ",".join(task.dependencies.blocked)
-    if task.type == TaskType.MILESTONE:
-        tags.setdefault("milestone", "")
     for entry in task.tags:
         name, _, value = entry.partition(":")
         if name:
             tags[name] = value
+    return tags
+
+
+def _render_task_line(task: Task, depth: int) -> str:
     return _build_line(
         indent_level=depth,
         checkbox=_CHECKBOX_FOR_STATUS.get(task.status, " "),
         title=task.text,
-        tags=tags,
+        tags=_build_meta_tags(task),
         dataview_tags=set(),
     )
+
+
+def _render_milestone_line(task: Task) -> str:
+    return _build_milestone_heading(
+        task.text, _build_meta_tags(task), set(),
+    )
+
+
+def _build_milestone_heading(
+    title: str, tags: Dict[str, str], dataview_tags: Set[str],
+) -> str:
+    tag_str = render_tags(tags, dataview_tags)
+    if tag_str:
+        return f"#### {title} {tag_str}"
+    return f"#### {title}"
+
+
+def _frontmatter_to_notes(file: Path) -> List[str]:
+    fm = _read_frontmatter(file)
+    if not fm:
+        return []
+    fm_lines = fm.splitlines()
+    inner: List[str] = []
+    started = False
+    for line in fm_lines:
+        if line.strip() == "---":
+            if not started:
+                started = True
+                continue
+            break
+        if started:
+            inner.append(line)
+    return [ln for ln in inner if ln.strip()]
 
 
 # ---- record / private helpers ----------------------------------------------
@@ -487,6 +566,7 @@ class _Record:
     dataview_tags: Set[str]
     section: str
     parent: Optional["_Record"]
+    type: TaskType = TaskType.TASK
 
 
 def _indent_level(indent: str) -> int:

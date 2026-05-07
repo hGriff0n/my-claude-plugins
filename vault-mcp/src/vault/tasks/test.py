@@ -317,6 +317,73 @@ class TestParse:
         [task] = TaskParser(root).parse(path)
         assert task.type == TaskType.MILESTONE
 
+    def test_milestone_via_heading(self, tmp_path):
+        root = _vault(tmp_path)
+        path = _write_root_taskfile(
+            root, "#### Release 🆔 mil003 📅 2026-05-01\n"
+        )
+        [task] = TaskParser(root).parse(path)
+        assert task.id == "mil003"
+        assert task.type == TaskType.MILESTONE
+        assert task.text == "Release"
+        assert task.time_details.due == date(2026, 5, 1)
+
+    def test_milestone_heading_id_generated(self, tmp_path):
+        root = _vault(tmp_path)
+        path = _write_root_taskfile(root, "#### Auto id heading\n")
+        [task] = TaskParser(root).parse(path)
+        assert task.id
+        assert task.type == TaskType.MILESTONE
+        # Heading rewritten on disk with the new id.
+        rewritten = path.read_text(encoding="utf-8")
+        assert task.id in rewritten
+        assert rewritten.startswith("#### Auto id heading")
+
+    def test_milestone_heading_parents_top_level_tasks(self, tmp_path):
+        root = _vault(tmp_path)
+        content = (
+            "#### Phase one 🆔 mil010\n"
+            "\n"
+            "- [ ] Top one 🆔 t00001\n"
+            "    - [ ] Sub 🆔 sb0001\n"
+            "- [ ] Top two 🆔 t00002\n"
+        )
+        path = _write_root_taskfile(root, content)
+        tasks = {t.id: t for t in TaskParser(root).parse(path)}
+        assert tasks["t00001"].dependencies.parent == "mil010"
+        assert tasks["t00002"].dependencies.parent == "mil010"
+        # Nested children still parent on the enclosing task, not the milestone.
+        assert tasks["sb0001"].dependencies.parent == "t00001"
+        assert sorted(tasks["mil010"].dependencies.children) == [
+            "t00001", "t00002",
+        ]
+
+    def test_milestone_scope_ends_at_next_heading(self, tmp_path):
+        root = _vault(tmp_path)
+        content = (
+            "#### Phase one 🆔 mil020\n"
+            "- [ ] Inside 🆔 in0001\n"
+            "## Other section\n"
+            "- [ ] Outside 🆔 ou0001\n"
+        )
+        path = _write_root_taskfile(root, content)
+        tasks = {t.id: t for t in TaskParser(root).parse(path)}
+        assert tasks["in0001"].dependencies.parent == "mil020"
+        assert tasks["ou0001"].dependencies.parent == ""
+
+    def test_milestone_scope_ends_at_next_milestone(self, tmp_path):
+        root = _vault(tmp_path)
+        content = (
+            "#### Phase one 🆔 mil030\n"
+            "- [ ] First 🆔 fi0001\n"
+            "#### Phase two 🆔 mil031\n"
+            "- [ ] Second 🆔 sc0001\n"
+        )
+        path = _write_root_taskfile(root, content)
+        tasks = {t.id: t for t in TaskParser(root).parse(path)}
+        assert tasks["fi0001"].dependencies.parent == "mil030"
+        assert tasks["sc0001"].dependencies.parent == "mil031"
+
     def test_parent_child(self, tmp_path):
         root = _vault(tmp_path)
         path = _write_root_taskfile(
@@ -468,18 +535,20 @@ class TestCreateTask:
         )
         assert "ef0001" in text
 
-    def test_create_milestone_writes_tag(self, tmp_path):
+    def test_create_milestone_writes_heading(self, tmp_path):
         root = _vault(tmp_path)
         _write_root_taskfile(root, "")
         parser = _stack(root)
-        _apply(parser, 
+        _apply(parser,
             _placeholder_task(
                 id="ms0001", text="Ship", type=TaskType.MILESTONE
             ),
             CreateTask(),
         )
         text = (root / ROOT_TASKFILE).read_text(encoding="utf-8")
-        assert "#milestone" in text
+        assert "#### Ship" in text
+        assert "ms0001" in text
+        assert "- [ ] Ship" not in text
 
     # Strict effort-existence validation no longer applies: `update` is
     # DB-only and the debouncer's parent_file_resolver returns the canonical
@@ -709,6 +778,53 @@ class TestRoundTrip:
         assert "stub" in parsed.tags
         assert parsed.time_details.created == date(2026, 1, 1)
         assert parsed.time_details.due == date(2026, 2, 1)
+
+    def test_frontmatter_preserved_through_write(self, tmp_path):
+        root = _vault(tmp_path)
+        _write_root_taskfile(
+            root,
+            "---\ntags: [a, b]\nstatus: active\n---\n\n- [ ] T 🆔 fr0001\n",
+        )
+        parser = _stack(root)
+        _apply(parser,
+            _placeholder_task(id="fr0001"),
+            UpdateText("Renamed"),
+        )
+        text = (root / ROOT_TASKFILE).read_text(encoding="utf-8")
+        assert text.startswith("---\n")
+        assert "tags: [a, b]" in text
+        assert "status: active" in text
+        assert "Renamed" in text
+
+    def test_legacy_milestone_tag_migrates_to_heading(self, tmp_path):
+        root = _vault(tmp_path)
+        _write_root_taskfile(
+            root, "- [ ] Ship 🆔 lg0001 #milestone\n"
+        )
+        parser = _stack(root)
+        # Trigger a write by retitling the parsed milestone.
+        [parsed] = parser.parse(root / ROOT_TASKFILE)
+        assert parsed.type == TaskType.MILESTONE
+        _apply(parser, parsed, UpdateText("Ship v2"))
+        text = (root / ROOT_TASKFILE).read_text(encoding="utf-8")
+        assert "#### Ship v2" in text
+        assert "#milestone" not in text
+        assert "- [ ] Ship" not in text
+
+    def test_milestone_round_trip(self, tmp_path):
+        root = _vault(tmp_path)
+        _write_root_taskfile(root, "")
+        parser = _stack(root)
+        _apply(parser,
+            _placeholder_task(
+                id="mr0001", text="Phase one", type=TaskType.MILESTONE,
+            ),
+            CreateTask(),
+        )
+        [parsed] = parser.parse(root / ROOT_TASKFILE)
+        assert parsed.id == "mr0001"
+        assert parsed.type == TaskType.MILESTONE
+        assert parsed.text == "Phase one"
 
     def test_status_round_trip(self, tmp_path):
         root = _vault(tmp_path)
