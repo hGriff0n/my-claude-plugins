@@ -47,7 +47,7 @@ A taskfile is the unit of scan; individual tasks are extracted by `parse`.
   - `effort` ← derived from the file path: the effort folder name, or `"none"` for the root taskfile.
   - `notes` ← contiguous indented bullet lines following the task line whose indent exceeds the task's indent. Stored with their relative indent so nested note structure round-trips.
   - `dependencies.parent` ← the id of the enclosing task when this task is a more-deeply-indented `- [ ]` line under another task; `dependencies.children` is filled in a second pass after all tasks are collected.
-  - `dependencies.blocked` ← parsed from the `blocked` tag (canonical glyph `⛔`, also accepted as `#blocked:<id>` or `[blocked::<id>]`). Multiple blockers are encoded as a comma-separated value.
+  - `dependencies.blocked` ← parsed from the `blocked` tag (canonical glyph `⛔`, also accepted as `#blocked:<id>` or `[blocked::<id>]`). Multiple blockers are encoded as a comma-separated value. After all taskfiles have been indexed (initial scan and on every subsequent re-parse triggered by the watcher), an integrity pass prunes any `blocked` entry that references an id no longer present in the tasks table; the corresponding `blocked` tag is rewritten on disk via `update_dependencies`. The same pass is what reconciles parent/child links after a task disappears — a now-orphaned `dependencies.parent` reference is dropped, and the missing id is removed from any other task's `dependencies.children`.
   - `time_details` ← `created` / `due` / `scheduled` / `completed` from the corresponding emoji/dataview/hashtag entries when present.
 
 ### Write Operations
@@ -59,7 +59,7 @@ The parser's `Update` type enumerates:
 - `update_text` — rewrite the task title portion of the line, preserving the trailing tag block.
 - `update_dependencies` — rewrite the `blocked` tag (and any parent-nesting indent) for the task. There are no separate `blocks:` / `blocked-by:` markers — outgoing-blocker information is reconstructed by the indexer from the `blocked` values of other tasks.
 - `update_metadata` — update individual tag entries (`due`, `scheduled`, `created`, `completed`, arbitrary `#tag` / dataview entries). All tags are re-rendered through the canonical formatter so the on-disk syntax converges to the canonical form for known tags.
-- `archive` — move a `CLOSED` task out of the active taskfile into a long-term archive store; the task drops from the index after the next re-parse.
+- `archive` — move a `CLOSED` task out of its source taskfile and append it to the daily note for its `completed` date. The task drops from the index after the next re-parse.
 - `update_id` — internal write used by `parse` to backfill a missing `id` tag; not exposed externally.
 
 All writes are direct file I/O batched through `vault/debounce.py` (see `arch/parser.md`).
@@ -177,29 +177,42 @@ Update a task's mutable fields.
 2. For each populated field, invoke the corresponding parser write (`update_text`, `update_status`, `update_metadata`, `update_dependencies`).
 3. After re-parse, return the refreshed `Task`.
 
-### ArchiveTask
+### ArchiveTasks
 
-Archive a closed task. One-way: the task drops from the index.
+Archive `CLOSED` tasks by moving them out of their source taskfiles and appending them to the daily note for the date each task was completed. One-way: archived tasks drop from the index.
+
+The default (no filters) archives every `CLOSED` task in the database. Filters narrow the set; an explicit `ids` list bypasses status/effort filters and archives exactly those tasks (still requiring each to be `CLOSED`).
 
 #### Endpoint
 
-`POST /tasks/{id}/archive` — `operation_id: task_archive`.
+`POST /tasks/archive` — `operation_id: task_archive`.
 
 #### Request
 
-`ArchiveTaskRequest`:
-- `id: str` (path).
+`ArchiveTasksRequest`:
+- `ids: list[str] | None` — explicit task ids to archive. When omitted, every `CLOSED` task in the database is selected (subject to `effort`).
+- `effort: str | None` — restrict the default selection to a single effort (`"none"` for the root taskfile). Ignored when `ids` is provided.
+- `dry_run: bool = false` — compute the selection and grouping but do not write to daily notes or source files.
 
 #### Response
 
-`200 OK` — `ArchiveTaskResponse`:
-- `archived: bool` — always `true` on success.
+`200 OK` — `ArchiveTasksResponse`:
+- `archived: dict[str, int]` — map of daily-note files written to and the number of tasks archived to file
+- `failures: list[str]` — completion dates whose daily-note write failed; the corresponding tasks remain in their source files.
+- `updates: list[{id, OPENED | CLOSED}]` - list of tasks that were modified during the archival, paired with an "OPENED"/"CLOSED" enum depending on whether the task was re-opened (because it had open children - integrity fix; see Behavior) or closed (ie. archived)
+- `dry_run: bool` — echoes the request flag.
 
-`404 Not Found` if no task matches `id`.
-`400 Bad Request` if the task is not in `CLOSED` status.
+`400 Bad Request` if any explicit `id` is unknown or refers to a non-`CLOSED` task.
 
 #### Behavior
 
-1. Load the task by `id`; 404 if missing. 400 if `status != CLOSED`.
-2. Invoke the parser's `archive` write.
-3. After re-parse, the task is no longer in the table; return `{ archived: true }`.
+Modeled on `src/scripts/archive_tasks.py`.
+
+1. **Select**: if `ids` is provided, load those tasks (400 on unknown id or non-`CLOSED` status). Otherwise query all `CLOSED` tasks, optionally filtered by `effort`.
+2. **Integrity pass**: walk the task tree of the selection. Any `CLOSED` task that has open descendants is reopened (status flipped back to `OPEN`, with `blocked` populated from the open children's ids) and excluded from this archive run; its done descendants remain individually archivable. Reopened ids are returned in the response.
+3. **Group by completion date**: every remaining selected task must carry a `completed` tag. Group tasks by that date.
+4. **Per-date write**:
+   - Resolve the daily-note path under `areas/journal/<YYYY>/<MM Month>/<DD>.md`.
+   - Render the date's tasks via the parser's canonical task serializer. A task is nested under its parent only if that parent is also being archived on the same date; otherwise it renders at indent 0.
+   - Append a `## Completed Tasks` section with the rendered content. If the daily note does not yet exist, create it from the daily-note template.
+   - Only if the daily-note write succeeds, invoke the parser's `archive` write for each task in that date group, removing them from their source files. A failure on one date does not block other dates; the failed date is recorded in `failures`.

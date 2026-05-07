@@ -142,6 +142,7 @@ class TaskParser:
             WatchCriterion(target=taskfile, events=events),
             self._on_taskfile_event,
         )
+        logging.info(f'[TASKS] Registering watcher for file={taskfile}')
         self._taskfile_handles[taskfile] = handle
 
     def _parent_file(self, task: Task) -> Path:
@@ -184,11 +185,38 @@ class TaskParser:
         if event == EventType.DELETE:
             for task in self._elements_for_file(file):
                 self._db.delete(task, origin=handle)
-            return
-        if not file.is_file():
-            return
-        for task in self.parse(file):
-            self._db.update(task, origin=handle)
+        elif file.is_file():
+            for task in self.parse(file):
+                self._db.update(task, origin=handle)
+        self.prune_dangling_refs(origin=handle)
+
+    def prune_dangling_refs(self, *, origin: Any = None) -> None:
+        """Drop blocked / parent / child references to ids no longer in the table.
+
+        Runs after every parse cycle (initial seed and watcher-driven
+        re-parses) so the index converges to a state where every reference
+        resolves to a live task. The corresponding `blocked` tag is
+        rewritten on disk via the standard write path.
+        """
+        tasks = self._db.query('SELECT * FROM "task"')
+        valid_ids = {t.id for t in tasks}
+        for task in tasks:
+            deps = task.dependencies
+            new_blocked = [b for b in deps.blocked if b in valid_ids]
+            new_parent = deps.parent if deps.parent in valid_ids else ""
+            new_children = [c for c in deps.children if c in valid_ids]
+            if (
+                new_blocked == deps.blocked
+                and new_parent == deps.parent
+                and new_children == deps.children
+            ):
+                continue
+            task.dependencies = Dependencies(
+                blocked=new_blocked, parent=new_parent, children=new_children,
+            )
+            if task.status == TaskStatus.BLOCKED and not new_blocked:
+                task.status = TaskStatus.OPEN
+            self._db.update(task, origin=origin)
 
     def parse(self, file: Path) -> List[Task]:
         file = Path(file)
@@ -448,6 +476,7 @@ class TaskParser:
             last_updated=last_updated,
             due=_coerce_date(tags.get("due", "")),
             scheduled=_coerce_date(tags.get("scheduled", "")),
+            completed=_coerce_date_optional(tags.get("completed", "")),
         )
 
         return Task(
@@ -498,9 +527,9 @@ class TaskParser:
 def _build_meta_tags(task: Task) -> Dict[str, str]:
     tags: Dict[str, str] = {"id": task.id}
     td = task.time_details
-    for fld in ("created", "due", "scheduled"):
+    for fld in ("created", "due", "scheduled", "completed"):
         value = getattr(td, fld, None)
-        if value and value != _NULL_DATE:
+        if value is not None and value != _NULL_DATE:
             tags[fld] = value.isoformat()
     if task.dependencies.blocked:
         tags["blocked"] = ",".join(task.dependencies.blocked)
@@ -580,6 +609,15 @@ def _coerce_date(value: str) -> date:
         return date.fromisoformat(value.strip())
     except ValueError:
         return _NULL_DATE
+
+
+def _coerce_date_optional(value: str) -> Optional[date]:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError:
+        return None
 
 
 def _is_emoji_key(name: str) -> bool:

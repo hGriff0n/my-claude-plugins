@@ -122,7 +122,7 @@ def test_update_inserts_when_no_existing_row():
     db = Database()
     db.register(Item)
     item = _sample_item()
-    db.update(item, item)
+    db.update(item)
 
     rows = db.query("SELECT * FROM item")
     assert len(rows) == 1
@@ -142,10 +142,10 @@ def test_update_replaces_existing_row():
     db = Database()
     db.register(Item)
     original = _sample_item()
-    db.update(original, original)
+    db.update(original)
 
     updated = original.model_copy(update={"name": "Renamed", "status": Status.CLOSED})
-    db.update(original, updated)
+    db.update(updated)
 
     rows = db.query("SELECT * FROM item")
     assert len(rows) == 1
@@ -158,12 +158,10 @@ def test_update_uses_id_field_not_full_equality():
     db = Database()
     db.register(Item)
     a = _sample_item("i1", "A")
-    db.update(a, a)
+    db.update(a)
 
-    # Same id, but key has different non-id fields than what's stored.
-    stale_key = a.model_copy(update={"name": "stale", "score": 99.0})
     new = a.model_copy(update={"name": "B"})
-    db.update(stale_key, new)
+    db.update(new)
 
     rows = db.query("SELECT * FROM item")
     assert len(rows) == 1
@@ -174,8 +172,8 @@ def test_update_falls_back_to_name_when_no_id():
     db = Database()
     db.register(Named)
     a = Named(name="x", note="first")
-    db.update(a, a)
-    db.update(a, Named(name="x", note="second"))
+    db.update(a)
+    db.update(Named(name="x", note="second"))
     rows = db.query("SELECT * FROM named")
     assert len(rows) == 1
     assert rows[0].note == "second"
@@ -186,21 +184,13 @@ def test_update_errors_when_no_identity_field():
     db.register(Anon)
     a = Anon(value=1)
     with pytest.raises(ValueError):
-        db.update(a, a)
+        db.update(a)
 
 
 def test_update_errors_for_unregistered_model():
     db = Database()
     with pytest.raises(ValueError):
-        db.update(Anon(value=1), Anon(value=1))
-
-
-def test_update_rejects_mismatched_types():
-    db = Database()
-    db.register(Item)
-    db.register(Named)
-    with pytest.raises(TypeError):
-        db.update(_sample_item(), Named(name="x", note=""))
+        db.update(Anon(value=1))
 
 
 # ---------------------------------------------------------------------------
@@ -210,8 +200,8 @@ def test_update_rejects_mismatched_types():
 def test_query_with_where_clause():
     db = Database()
     db.register(Item)
-    db.update(_sample_item("i1", "A"), _sample_item("i1", "A"))
-    db.update(_sample_item("i2", "B"), _sample_item("i2", "B"))
+    db.update(_sample_item("i1", "A"))
+    db.update(_sample_item("i2", "B"))
     rows = db.query("SELECT * FROM item WHERE id = 'i2'")
     assert [r.id for r in rows] == ["i2"]
 
@@ -219,7 +209,7 @@ def test_query_with_where_clause():
 def test_query_uses_dotted_columns_in_sql():
     db = Database()
     db.register(Item)
-    db.update(_sample_item(), _sample_item())
+    db.update(_sample_item())
     rows = db.query('SELECT * FROM item WHERE "display.stats.completed" = 2')
     assert len(rows) == 1
 
@@ -244,12 +234,12 @@ def test_roundtrip_preserves_optional_none_and_dates():
     db = Database()
     db.register(Item)
     item = _sample_item()
-    db.update(item, item)
+    db.update(item)
     fetched = db.query("SELECT * FROM item")[0]
     assert fetched.archived_on is None
     assert isinstance(fetched.created, date)
 
     item2 = item.model_copy(update={"archived_on": date(2026, 5, 1)})
-    db.update(item, item2)
+    db.update(item2)
     fetched2 = db.query("SELECT * FROM item")[0]
     assert fetched2.archived_on == date(2026, 5, 1)
