@@ -211,17 +211,25 @@ class WriteDebouncer:
         if cfg is None:
             log.warning("Skip projection: unknown system %r", entry.system)
             return
-        try:
-            elements = cfg.elements_for_file(entry.file)
-            self._watcher.mark_self_write(entry.file)
-            cfg.writer(entry.file, elements)
-        except Exception:
-            log.exception(
-                "Backport failed for %s (system=%s)", entry.file, entry.system,
-            )
-            if swallow:
-                return
-            raise
+        # TEMPORARILY DISABLED: pending_writes apply path. The DB→file
+        # backport is currently reintroducing stale/wrong data; skip the
+        # writer call until that's resolved. WAL entry is still cleared
+        # so the backlog doesn't accumulate.
+        log.info(
+            "pending_writes apply disabled — skipping backport for %s (system=%s)",
+            entry.file, entry.system,
+        )
+        # try:
+        #     elements = cfg.elements_for_file(entry.file)
+        #     self._watcher.mark_self_write(entry.file)
+        #     cfg.writer(entry.file, elements)
+        # except Exception:
+        #     log.exception(
+        #         "Backport failed for %s (system=%s)", entry.file, entry.system,
+        #     )
+        #     if swallow:
+        #         return
+        #     raise
         self._wal_clear_for_file(entry.file)
 
     # ------------------------------------------------------------------
