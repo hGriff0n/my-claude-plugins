@@ -24,7 +24,6 @@ from vault.tasks.parser import (  # noqa: E402
     UpdateMetadata,
     UpdateStatus,
     UpdateText,
-    _NULL_DATE,
     _indent_level,
     _skip_frontmatter,
     _split_tags,
@@ -82,12 +81,7 @@ def _make_effort(root: Path, name: str, *, backlog: bool = False) -> Path:
 
 
 def _empty_time() -> TimeBlock:
-    return TimeBlock(
-        created=_NULL_DATE,
-        last_updated=_NULL_DATE,
-        due=_NULL_DATE,
-        scheduled=_NULL_DATE,
-    )
+    return TimeBlock()
 
 
 def _empty_deps() -> Dependencies:
@@ -670,9 +664,7 @@ class TestUpdateMetadata:
         parser = _stack(root)
         td = TimeBlock(
             created=date(2026, 1, 1),
-            last_updated=_NULL_DATE,
             due=date(2026, 2, 1),
-            scheduled=_NULL_DATE,
         )
         _apply(parser, 
             _placeholder_task(id="um0003"),
@@ -766,9 +758,7 @@ class TestRoundTrip:
             tags=["stub"],
             time_details=TimeBlock(
                 created=date(2026, 1, 1),
-                last_updated=_NULL_DATE,
                 due=date(2026, 2, 1),
-                scheduled=_NULL_DATE,
             ),
         )
         _apply(parser, original, CreateTask())

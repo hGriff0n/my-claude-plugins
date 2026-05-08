@@ -29,8 +29,6 @@ log = logging.getLogger(__name__)
 SYSTEM_NAME = "tasks"
 ROOT_TASKFILE = "01 TASKS.md"
 
-_NULL_DATE = date.min
-
 # Tags that carry model-field semantics rather than appearing in `Task.tags`.
 _RESERVED_TAGS = frozenset({
     "id", "due", "scheduled", "created", "completed", "blocked",
@@ -476,7 +474,7 @@ class TaskParser:
             last_updated=last_updated,
             due=_coerce_date(tags.get("due", "")),
             scheduled=_coerce_date(tags.get("scheduled", "")),
-            completed=_coerce_date_optional(tags.get("completed", "")),
+            completed=_coerce_date(tags.get("completed", "")),
         )
 
         return Task(
@@ -529,7 +527,7 @@ def _build_meta_tags(task: Task) -> Dict[str, str]:
     td = task.time_details
     for fld in ("created", "due", "scheduled", "completed"):
         value = getattr(td, fld, None)
-        if value is not None and value != _NULL_DATE:
+        if value is not None:
             tags[fld] = value.isoformat()
     if task.dependencies.blocked:
         tags["blocked"] = ",".join(task.dependencies.blocked)
@@ -602,16 +600,7 @@ def _indent_level(indent: str) -> int:
     return len(indent.replace("\t", "    ")) // 4
 
 
-def _coerce_date(value: str) -> date:
-    if not value:
-        return _NULL_DATE
-    try:
-        return date.fromisoformat(value.strip())
-    except ValueError:
-        return _NULL_DATE
-
-
-def _coerce_date_optional(value: str) -> Optional[date]:
+def _coerce_date(value: str) -> Optional[date]:
     if not value:
         return None
     try:

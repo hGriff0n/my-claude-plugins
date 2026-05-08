@@ -55,9 +55,7 @@ def _new_effort(name: str) -> Effort:
         path=Path(f"efforts/{name}"),
         status=EffortStatus.ACTIVE,
         description="",
-        time_details=TimeBlock(
-            created=today, last_updated=today, due=today, scheduled=today
-        ),
+        time_details=TimeBlock(created=today, last_updated=today),
         display=DisplayDetails(
             task_stats=TaskStats(num_by_status={s.value: 0 for s in TaskStatus})
         ),

@@ -1,7 +1,5 @@
 """Tests for GET /efforts."""
 
-from datetime import date
-
 from routes.efforts._testing import make_client, make_effort_folder, make_vault
 from routes.efforts.list.route import router
 from schemas.tasks import Dependencies, Task, TaskStatus, TaskType
@@ -10,7 +8,6 @@ from schemas.time import TimeBlock
 
 def _seed_task(db, effort: str, status: TaskStatus) -> None:
     db.register(Task, system="tasks")
-    null = date.min
     task = Task(
         id=f"t-{effort}-{status.value}",
         type=TaskType.TASK,
@@ -20,7 +17,7 @@ def _seed_task(db, effort: str, status: TaskStatus) -> None:
         notes=[],
         tags=[],
         dependencies=Dependencies(blocked=[], parent="", children=[]),
-        time_details=TimeBlock(created=null, last_updated=null, due=null, scheduled=null),
+        time_details=TimeBlock(),
     )
     db.update(task)
 

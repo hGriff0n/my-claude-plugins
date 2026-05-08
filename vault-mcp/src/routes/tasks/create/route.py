@@ -1,5 +1,6 @@
 """POST /tasks — create a new task in the root taskfile or under an effort."""
 
+from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -8,7 +9,7 @@ from pydantic import BaseModel
 from routes.deps import App, get_app
 from schemas.tasks import Dependencies, Task, TaskStatus, TaskType
 from schemas.time import TimeBlock
-from vault.tasks.parser import CreateTask, _NULL_DATE
+from vault.tasks.parser import CreateTask
 
 router = APIRouter()
 
@@ -60,10 +61,8 @@ def task_create(body: CreateTaskRequest, app: App = Depends(get_app)) -> Task:
         tags=[],
         dependencies=Dependencies(blocked=[], parent=parent_id, children=[]),
         time_details=TimeBlock(
-            created=_NULL_DATE,
-            last_updated=_NULL_DATE,
-            due=_NULL_DATE,
-            scheduled=_NULL_DATE,
+            created=date.today(),
+            last_updated=date.today(),
         ),
     )
     app.task_parser.update(task, CreateTask())

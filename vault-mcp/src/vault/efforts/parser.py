@@ -32,8 +32,6 @@ BACKLOG_DIR = "__backlog"
 IDEAS_DIR = "__ideas"
 REQUIRED_FILES = ("00 README.md", "CLAUDE.md", "01 TASKS.md")
 
-_NULL_DATE = date.min
-
 MoveTarget = Literal["active", "backlog", "archive"]
 
 
@@ -222,8 +220,8 @@ class EffortParser:
         frontmatter, body = _split_frontmatter(readme_text)
         description = _first_paragraph_after_title(body)
 
-        due = _coerce_date(frontmatter.get("due")) or _NULL_DATE
-        scheduled = _coerce_date(frontmatter.get("scheduled")) or _NULL_DATE
+        due = _coerce_date(frontmatter.get("due"))
+        scheduled = _coerce_date(frontmatter.get("scheduled"))
 
         required_paths = [folder / f for f in REQUIRED_FILES]
         all_files = [p for p in folder.rglob("*") if p.is_file()]

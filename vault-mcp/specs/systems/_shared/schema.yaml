@@ -6,18 +6,21 @@ components:
   schemas:
     TimeBlock:
       type: object
-      description: Common time properties carried by most domain objects.
-      required: [created, last_updated, due, scheduled]
+      description: Common time properties carried by most domain objects. All fields nullable; null indicates the value is not set.
       properties:
         created:
           type: string
           format: date
+          nullable: true
         last_updated:
           type: string
           format: date
+          nullable: true
         due:
           type: string
           format: date
+          nullable: true
         scheduled:
           type: string
           format: date
+          nullable: true

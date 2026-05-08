@@ -16,7 +16,6 @@ from vault.efforts.parser import (  # noqa: E402
     EffortParser,
     MoveEffort,
     REQUIRED_FILES,
-    _NULL_DATE,
 )
 
 
@@ -96,8 +95,8 @@ class TestParse:
         root = _vault(tmp_path)
         folder = _make_effort(root, "efforts", "alpha", body="# Alpha\n\nDesc.\n")
         [effort] = EffortParser(root).parse(folder)
-        assert effort.time_details.due == _NULL_DATE
-        assert effort.time_details.scheduled == _NULL_DATE
+        assert effort.time_details.due is None
+        assert effort.time_details.scheduled is None
 
     def test_zero_task_stats(self, tmp_path):
         root = _vault(tmp_path)
@@ -124,10 +123,7 @@ def _placeholder(name: str, path: str | None = None):
         path=Path(path or f"efforts/{name}"),
         status=EffortStatus.ACTIVE,
         description="",
-        time_details=TimeBlock(
-            created=_NULL_DATE, last_updated=_NULL_DATE,
-            due=_NULL_DATE, scheduled=_NULL_DATE,
-        ),
+        time_details=TimeBlock(),
         display=DisplayDetails(
             task_stats=TaskStats(num_by_status={s.value: 0 for s in TaskStatus})
         ),
