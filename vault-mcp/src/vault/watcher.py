@@ -95,7 +95,7 @@ class Watcher:
     def __init__(
         self,
         poll_interval: float = 1.0,
-        coalesce_window: float = 0.2,
+        coalesce_window: float = 5.0,
         self_write_window: float = 2.0,
     ) -> None:
         self._poll_interval = poll_interval

@@ -229,7 +229,10 @@ class TaskParser:
 
         records, wrote_back = self._collect_records(lines, body_start)
         if wrote_back:
-            file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            # Auto-assigned IDs reach disk via the debouncer's normal backport
+            # rather than an inline write, so a concurrent edit in Obsidian
+            # can't be clobbered by a stale read+rewrite from this thread.
+            self._debouncer.enqueue(file, SYSTEM_NAME)
 
         notes_by_id = self._collect_notes(lines, body_start)
 
