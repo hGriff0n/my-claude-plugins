@@ -38,6 +38,8 @@ class Task(BaseModel):
     status: TaskStatus  # Whether the task is open/closed/blocked/etc
     text: str  # The task "title" line
     effort: str  # The parent effort this task belongs to (or 'none' if in the root taskfile)
+    estimate: str = ""  # Estimated effort/duration (e.g. "2h", "30m"); empty if unset
+    actual: str = ""  # Recorded actual effort/duration; empty if unset
     notes: List[str]  # A list of bullet points that are used to attach additional information/investigation to tasks
     tags: List[str]  # Tags/properties that are specially parsed from the taskline
     dependencies: Dependencies  # References to other tasks. Handles both parent-child and blocking relations

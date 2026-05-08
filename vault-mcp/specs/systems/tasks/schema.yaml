@@ -50,6 +50,14 @@ components:
         effort:
           type: string
           description: Parent effort name, or 'none' if in the root taskfile.
+        estimate:
+          type: string
+          default: ""
+          description: Estimated effort/duration (e.g. "2h", "30m"); empty if unset.
+        actual:
+          type: string
+          default: ""
+          description: Recorded actual effort/duration; empty if unset.
         notes:
           type: array
           description: Bullet points attaching additional info/investigation.

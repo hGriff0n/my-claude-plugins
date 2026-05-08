@@ -479,6 +479,65 @@ class TestParse:
 
 
 # ---------------------------------------------------------------------------
+# parse → write round-trip preservation
+# ---------------------------------------------------------------------------
+
+
+class TestRoundTripPreservation:
+    """Parse a task line, write the model back, re-parse, and check fields
+    survive. Uses parser.write() directly to bypass the debouncer."""
+
+    def test_completed_date_round_trips(self, tmp_path):
+        root = _vault(tmp_path)
+        path = _write_root_taskfile(
+            root, "- [x] Done 🆔 rt0001 ✅ 2026-04-15\n"
+        )
+        parser = TaskParser(root)
+        [task] = parser.parse(path)
+        assert task.time_details.completed == date(2026, 4, 15)
+
+        parser.write(path, [task])
+        rewritten = path.read_text(encoding="utf-8")
+        assert "✅ 2026-04-15" in rewritten
+
+        [reparsed] = TaskParser(root).parse(path)
+        assert reparsed.time_details.completed == date(2026, 4, 15)
+
+    def test_estimate_round_trips(self, tmp_path):
+        root = _vault(tmp_path)
+        path = _write_root_taskfile(
+            root, "- [ ] Plan 🆔 rt0002 #estimate:2h\n"
+        )
+        parser = TaskParser(root)
+        [task] = parser.parse(path)
+        assert task.estimate == "2h"
+
+        parser.write(path, [task])
+        rewritten = path.read_text(encoding="utf-8")
+        assert "rt0002" in rewritten
+        assert "2h" in rewritten
+
+        [reparsed] = TaskParser(root).parse(path)
+        assert reparsed.estimate == "2h"
+
+    def test_actual_round_trips(self, tmp_path):
+        root = _vault(tmp_path)
+        path = _write_root_taskfile(
+            root, "- [x] Logged 🆔 rt0003 [actual:: 30m]\n"
+        )
+        parser = TaskParser(root)
+        [task] = parser.parse(path)
+        assert task.actual == "30m"
+
+        parser.write(path, [task])
+        rewritten = path.read_text(encoding="utf-8")
+        assert "30m" in rewritten
+
+        [reparsed] = TaskParser(root).parse(path)
+        assert reparsed.actual == "30m"
+
+
+# ---------------------------------------------------------------------------
 # write: CreateTask
 # ---------------------------------------------------------------------------
 

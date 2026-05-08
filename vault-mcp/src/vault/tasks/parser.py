@@ -486,6 +486,8 @@ class TaskParser:
             status=status,
             text=rec.title,
             effort=effort_name,
+            estimate=tags.get("estimate", ""),
+            actual=tags.get("actual", ""),
             notes=notes,
             tags=free_tags,
             dependencies=Dependencies(
@@ -534,6 +536,10 @@ def _build_meta_tags(task: Task) -> Dict[str, str]:
             tags[fld] = value.isoformat()
     if task.dependencies.blocked:
         tags["blocked"] = ",".join(task.dependencies.blocked)
+    if task.estimate:
+        tags["estimate"] = task.estimate
+    if task.actual:
+        tags["actual"] = task.actual
     for entry in task.tags:
         name, _, value = entry.partition(":")
         if name:
