@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Type
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 
 from pydantic import BaseModel
 
@@ -30,6 +31,45 @@ log = logging.getLogger(__name__)
 ParentFileResolver = Callable[[BaseModel], Optional[Path]]
 Writer = Callable[[Path, List[BaseModel]], None]
 ElementsForFile = Callable[[Path], List[BaseModel]]
+
+
+def _identity_value(elem: BaseModel) -> Any:
+    fields = type(elem).model_fields
+    if "id" in fields:
+        return getattr(elem, "id")
+    if "name" in fields:
+        return getattr(elem, "name")
+    return None
+
+
+def _table_name_for(model: Type[BaseModel]) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", model.__name__).lower()
+
+
+def _db_lookup(db: Any, elem: BaseModel) -> Optional[BaseModel]:
+    fields = type(elem).model_fields
+    field = "id" if "id" in fields else "name" if "name" in fields else None
+    if field is None:
+        return None
+    value = getattr(elem, field, None)
+    if value is None:
+        return None
+    table = _table_name_for(type(elem))
+    try:
+        rows = db.query(f'SELECT * FROM "{table}"')
+    except Exception:
+        return None
+    for row in rows:
+        if getattr(row, field, None) == value:
+            return row
+    return None
+
+
+def _db_matches(db: Any, elem: BaseModel, payload: Any) -> bool:
+    existing = _db_lookup(db, elem)
+    if existing is None:
+        return False
+    return existing.model_dump(mode="json") == payload
 
 
 @dataclass
@@ -211,25 +251,17 @@ class WriteDebouncer:
         if cfg is None:
             log.warning("Skip projection: unknown system %r", entry.system)
             return
-        # TEMPORARILY DISABLED: pending_writes apply path. The DB→file
-        # backport is currently reintroducing stale/wrong data; skip the
-        # writer call until that's resolved. WAL entry is still cleared
-        # so the backlog doesn't accumulate.
-        log.info(
-            "pending_writes apply disabled — skipping backport for %s (system=%s)",
-            entry.file, entry.system,
-        )
-        # try:
-        #     elements = cfg.elements_for_file(entry.file)
-        #     self._watcher.mark_self_write(entry.file)
-        #     cfg.writer(entry.file, elements)
-        # except Exception:
-        #     log.exception(
-        #         "Backport failed for %s (system=%s)", entry.file, entry.system,
-        #     )
-        #     if swallow:
-        #         return
-        #     raise
+        try:
+            elements = cfg.elements_for_file(entry.file)
+            self._watcher.mark_self_write(entry.file)
+            cfg.writer(entry.file, elements)
+        except Exception:
+            log.exception(
+                "Backport failed for %s (system=%s)", entry.file, entry.system,
+            )
+            if swallow:
+                return
+            raise
         self._wal_clear_for_file(entry.file)
 
     # ------------------------------------------------------------------
@@ -243,47 +275,119 @@ class WriteDebouncer:
         deleted: bool,
         file: Path,
     ) -> None:
-        """Append a pending mutation to the WAL."""
+        """Record a pending mutation, replacing any prior entry for this element.
+
+        Keyed by `(system, model, identity)` so a second update to the same
+        element collapses the earlier entry — latest write wins.
+        """
+        identity = _identity_value(elem)
+        model_name = type(elem).__name__
         record = {
             "system": system,
-            "model": type(elem).__name__,
+            "model": model_name,
+            "identity": identity,
             "deleted": deleted,
             "file": str(file),
             "payload": elem.model_dump(mode="json"),
         }
-        line = json.dumps(record, ensure_ascii=False)
+        new_line = json.dumps(record, ensure_ascii=False)
         with self._lock:
-            with self._wal_path.open("a", encoding="utf-8") as f:
+            kept = self._wal_read_filtered(
+                exclude_key=(system, model_name, identity),
+            )
+            kept.append(new_line)
+            self._wal_write(kept)
+
+    def _wal_read_filtered(
+        self,
+        *,
+        exclude_key: Optional[Tuple[str, str, Any]] = None,
+        exclude_file: Optional[str] = None,
+    ) -> List[str]:
+        """Read WAL lines, dropping ones matching the given filters."""
+        if not self._wal_path.exists():
+            return []
+        kept: List[str] = []
+        with self._wal_path.open("r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.rstrip("\n")
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if exclude_file is not None and rec.get("file") == exclude_file:
+                    continue
+                if exclude_key is not None:
+                    key = (
+                        rec.get("system"),
+                        rec.get("model"),
+                        rec.get("identity"),
+                    )
+                    if key == exclude_key:
+                        continue
+                kept.append(line)
+        return kept
+
+    def _wal_write(self, lines: List[str]) -> None:
+        tmp = self._wal_path.with_suffix(self._wal_path.suffix + ".tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            for line in lines:
                 f.write(line + "\n")
+        tmp.replace(self._wal_path)
+
+    def pending_elements(self, file: Path) -> List[BaseModel]:
+        """Return deserialized pending elements for `file`.
+
+        Used by parsers during inbound reconciliation: when the watcher
+        re-parses a file with outstanding pending writes, the parser can
+        match unidentified parsed elements against these candidates rather
+        than creating duplicates. Deletions are excluded.
+        """
+        with self._lock:
+            if not self._wal_path.exists():
+                return []
+            target = str(file)
+            result: List[BaseModel] = []
+            with self._wal_path.open("r", encoding="utf-8") as f:
+                for raw in f:
+                    line = raw.rstrip("\n")
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if rec.get("file") != target or rec.get("deleted"):
+                        continue
+                    cfg = self._systems.get(rec.get("system"))
+                    if cfg is None:
+                        continue
+                    model_cls = cfg.models.get(rec.get("model"))
+                    if model_cls is None:
+                        continue
+                    try:
+                        result.append(model_cls.model_validate(rec["payload"]))
+                    except Exception:
+                        log.exception("pending_elements: payload validation failed")
+            return result
 
     def _wal_clear_for_file(self, file: Path) -> None:
         with self._lock:
             if not self._wal_path.exists():
                 return
-            keep: List[str] = []
-            with self._wal_path.open("r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.rstrip("\n")
-                    if not line:
-                        continue
-                    try:
-                        record = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if record.get("file") == str(file):
-                        continue
-                    keep.append(line)
-            tmp = self._wal_path.with_suffix(self._wal_path.suffix + ".tmp")
-            with tmp.open("w", encoding="utf-8") as f:
-                for line in keep:
-                    f.write(line + "\n")
-            tmp.replace(self._wal_path)
+            kept = self._wal_read_filtered(exclude_file=str(file))
+            self._wal_write(kept)
 
     def wal_replay(self, db: Any) -> int:
         """Re-apply WAL entries to the database with origin=None.
 
-        Called after seeding so any updates that crashed before backport
-        reach disk on the next debouncer tick. Returns count replayed.
+        For each entry, compare against current DB state: if the DB already
+        matches the WAL payload, skip (the mutation reached the DB before
+        the crash). Otherwise re-apply, which re-enters the normal write
+        path with origin=None and repopulates `_pending` so the next
+        resolver tick projects the file. Returns count replayed.
         """
         if not self._wal_path.exists():
             return 0
@@ -310,8 +414,13 @@ class WriteDebouncer:
             except Exception:
                 log.exception("WAL entry failed validation")
                 continue
+            deleted = bool(record.get("deleted"))
+            if not deleted and _db_matches(db, elem, record.get("payload")):
+                continue
+            if deleted and _db_lookup(db, elem) is None:
+                continue
             try:
-                if record.get("deleted"):
+                if deleted:
                     db.delete(elem, origin=None)
                 else:
                     db.update(elem, origin=None)

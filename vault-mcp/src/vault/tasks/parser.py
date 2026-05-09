@@ -227,8 +227,9 @@ class TaskParser:
         effort_name = self._effort_for(file)
         last_updated = date.fromtimestamp(file.stat().st_mtime)
 
-        records, wrote_back = self._collect_records(lines, body_start)
-        if wrote_back:
+        pending = self._pending_tasks_for(file)
+        records, wrote_back = self._collect_records(lines, body_start, pending)
+        if wrote_back and self._debouncer is not None:
             # Auto-assigned IDs reach disk via the debouncer's normal backport
             # rather than an inline write, so a concurrent edit in Obsidian
             # can't be clobbered by a stale read+rewrite from this thread.
@@ -335,14 +336,26 @@ class TaskParser:
 
     # ---- parse helpers ----
 
+    def _pending_tasks_for(self, file: Path) -> List[Task]:
+        if self._debouncer is None:
+            return []
+        try:
+            elements = self._debouncer.pending_elements(file)
+        except Exception:
+            log.exception("pending_elements lookup failed for %s", file)
+            return []
+        return [e for e in elements if isinstance(e, Task)]
+
     def _collect_records(
         self, lines: List[str], body_start: int,
+        pending: Optional[List[Task]] = None,
     ) -> Tuple[List["_Record"], bool]:
         records: List[_Record] = []
         stack: List[_Record] = []
         section = ""
         current_milestone: Optional[_Record] = None
         wrote_back = False
+        candidates: List[Task] = list(pending or [])
 
         for i in range(body_start, len(lines)):
             raw = lines[i]
@@ -354,11 +367,15 @@ class TaskParser:
                 if ms:
                     title, tags, dataview_tags = _split_tags(ms.group(1))
                     if not tags.get("id"):
-                        tags["id"] = generate_task_id()
-                        lines[i] = _build_milestone_heading(
-                            title, tags, dataview_tags,
-                        )
-                        wrote_back = True
+                        adopted = _adopt_pending_id(title, candidates)
+                        if adopted is not None:
+                            tags["id"] = adopted
+                        else:
+                            tags["id"] = generate_task_id()
+                            lines[i] = _build_milestone_heading(
+                                title, tags, dataview_tags,
+                            )
+                            wrote_back = True
                     rec = _Record(
                         indent=-1,
                         checkbox="",
@@ -389,9 +406,13 @@ class TaskParser:
             title, tags, dataview_tags = _split_tags(m.group(3))
 
             if not tags.get("id"):
-                tags["id"] = generate_task_id()
-                lines[i] = _build_line(indent, checkbox, title, tags, dataview_tags)
-                wrote_back = True
+                adopted = _adopt_pending_id(title, candidates)
+                if adopted is not None:
+                    tags["id"] = adopted
+                else:
+                    tags["id"] = generate_task_id()
+                    lines[i] = _build_line(indent, checkbox, title, tags, dataview_tags)
+                    wrote_back = True
 
             while stack and stack[-1].indent >= indent:
                 stack.pop()
@@ -603,6 +624,21 @@ class _Record:
     section: str
     parent: Optional["_Record"]
     type: TaskType = TaskType.TASK
+
+
+def _adopt_pending_id(title: str, candidates: List[Task]) -> Optional[str]:
+    """Match an id-less parsed task against pending writes by text prefix.
+
+    Returns the pending task's id if exactly one candidate's `text` is a
+    prefix of `title`. Removes the matched candidate so it can't be
+    consumed twice in the same parse. Zero or multiple matches → None,
+    caller falls through to generating a fresh id.
+    """
+    matches = [c for c in candidates if title.startswith(c.text)]
+    if len(matches) != 1:
+        return None
+    candidates.remove(matches[0])
+    return matches[0].id
 
 
 def _indent_level(indent: str) -> int:

@@ -325,10 +325,14 @@ class TestParse:
     def test_milestone_heading_id_generated(self, tmp_path):
         root = _vault(tmp_path)
         path = _write_root_taskfile(root, "#### Auto id heading\n")
-        [task] = TaskParser(root).parse(path)
+        # Full stack: id reaches disk via the debouncer projection,
+        # not an inline parse-time file write.
+        parser = _stack(root)
+        parser.parse(path)
+        parser._debouncer.flush()
+        [task] = parser._db.query('SELECT * FROM "task"')
         assert task.id
         assert task.type == TaskType.MILESTONE
-        # Heading rewritten on disk with the new id.
         rewritten = path.read_text(encoding="utf-8")
         assert task.id in rewritten
         assert rewritten.startswith("#### Auto id heading")
@@ -439,9 +443,12 @@ class TestParse:
     def test_id_generated_when_missing(self, tmp_path):
         root = _vault(tmp_path)
         path = _write_root_taskfile(root, "- [ ] No id task\n")
-        [task] = TaskParser(root).parse(path)
+        # Full stack: id reaches disk via the debouncer projection.
+        parser = _stack(root)
+        parser.parse(path)
+        parser._debouncer.flush()
+        [task] = parser._db.query('SELECT * FROM "task"')
         assert task.id  # auto-generated
-        # File should be rewritten with the new id
         rewritten = path.read_text(encoding="utf-8")
         assert task.id in rewritten
 
@@ -885,3 +892,245 @@ class TestRoundTrip:
         )
         [parsed] = parser.parse(root / ROOT_TASKFILE)
         assert parsed.status == TaskStatus.CLOSED
+
+
+# ---------------------------------------------------------------------------
+# Pending-write reconciliation
+# ---------------------------------------------------------------------------
+
+
+class TestPendingReconciliation:
+    """Per spec: id-less parsed tasks adopt a pending task's id when the
+    pending text is a prefix of the parsed title and exactly one matches."""
+
+    def test_adopts_id_on_exact_text_match(self, tmp_path):
+        root = _vault(tmp_path)
+        path = _write_root_taskfile(root, "- [ ] Buy milk\n")
+        parser = _stack(root)
+        # Initial parse generates an id; pending now contains it.
+        [seeded] = parser.parse(path)
+        # Simulate the user editing the same file before backport — id is
+        # gone from disk, but the pending write still carries it.
+        path.write_text("- [ ] Buy milk\n", encoding="utf-8")
+        [reparsed] = parser.parse(path)
+        assert reparsed.id == seeded.id
+
+    def test_adopts_id_on_text_prefix_match(self, tmp_path):
+        root = _vault(tmp_path)
+        path = _write_root_taskfile(root, "- [ ] Buy milk\n")
+        parser = _stack(root)
+        [seeded] = parser.parse(path)
+        # User extended the task text while the backport was pending.
+        path.write_text("- [ ] Buy milk and bread\n", encoding="utf-8")
+        [reparsed] = parser.parse(path)
+        assert reparsed.id == seeded.id
+        assert reparsed.text == "Buy milk and bread"
+
+    def test_no_match_falls_through_to_new_id(self, tmp_path):
+        root = _vault(tmp_path)
+        path = _write_root_taskfile(root, "- [ ] Buy milk\n")
+        parser = _stack(root)
+        [seeded] = parser.parse(path)
+        # Replace with a totally different task — no pending text is a prefix.
+        path.write_text("- [ ] Walk dog\n", encoding="utf-8")
+        [reparsed] = parser.parse(path)
+        assert reparsed.id != seeded.id
+
+    def test_ambiguous_match_falls_through_to_new_id(self, tmp_path):
+        root = _vault(tmp_path)
+        path = _write_root_taskfile(
+            root, "- [ ] Same text\n- [ ] Same text\n",
+        )
+        parser = _stack(root)
+        seeded = parser.parse(path)
+        assert len(seeded) == 2
+        # Both pending tasks share the same text — a third id-less line
+        # with that same text matches both, so we fall through.
+        path.write_text(
+            "- [ ] Same text\n- [ ] Same text\n- [ ] Same text\n",
+            encoding="utf-8",
+        )
+        reparsed = parser.parse(path)
+        seeded_ids = {t.id for t in seeded}
+        # Every line sees >1 prefix-matching candidate → each falls through
+        # to a fresh id rather than adopting either of the seeded ones.
+        new_ids = [t.id for t in reparsed if t.id not in seeded_ids]
+        assert len(new_ids) == 3
+
+    def test_match_consumes_candidate_once(self, tmp_path):
+        root = _vault(tmp_path)
+        path = _write_root_taskfile(root, "- [ ] Alpha\n- [ ] Beta\n")
+        parser = _stack(root)
+        seeded = {t.text: t.id for t in parser.parse(path)}
+        # Strip ids and re-parse — both should re-attach to their originals.
+        path.write_text("- [ ] Alpha\n- [ ] Beta\n", encoding="utf-8")
+        reparsed = {t.text: t.id for t in parser.parse(path)}
+        assert reparsed == seeded
+
+
+# ---------------------------------------------------------------------------
+# Write debouncer / WAL
+# ---------------------------------------------------------------------------
+
+
+class TestWriteDebouncerWal:
+    def _setup(self, tmp_path):
+        from database import Database
+        from vault.debounce import WriteDebouncer
+        from vault.watcher import Watcher
+
+        db = Database()
+        db.register(Task, system="tasks")
+        watcher = Watcher()
+        wal = tmp_path / ".wal"
+        debouncer = WriteDebouncer(watcher=watcher, wal_path=wal)
+        debouncer.register_system(
+            name="tasks",
+            lag=__import__("datetime").timedelta(milliseconds=500),
+            parent_file_resolver=lambda t: tmp_path / "01 TASKS.md",
+            writer=lambda f, els: None,
+            elements_for_file=lambda f: [],
+            models={Task.__name__: Task},
+        )
+        db.attach_debouncer(debouncer)
+        return db, debouncer, wal
+
+    def _task(self, id: str, text: str = "T") -> Task:
+        return Task(
+            id=id,
+            type=TaskType.TASK,
+            status=TaskStatus.OPEN,
+            text=text,
+            effort="none",
+            notes=[],
+            tags=[],
+            dependencies=Dependencies(blocked=[], parent="", children=[]),
+            time_details=TimeBlock(),
+        )
+
+    def test_wal_replace_on_repeat_record(self, tmp_path):
+        _db, debouncer, wal = self._setup(tmp_path)
+        f = tmp_path / "01 TASKS.md"
+        debouncer.wal_record("tasks", self._task("a", "v1"), False, f)
+        debouncer.wal_record("tasks", self._task("a", "v2"), False, f)
+        lines = wal.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 1
+        import json as _json
+        rec = _json.loads(lines[0])
+        assert rec["payload"]["text"] == "v2"
+        assert rec["identity"] == "a"
+
+    def test_wal_distinct_identities_coexist(self, tmp_path):
+        _db, debouncer, wal = self._setup(tmp_path)
+        f = tmp_path / "01 TASKS.md"
+        debouncer.wal_record("tasks", self._task("a", "x"), False, f)
+        debouncer.wal_record("tasks", self._task("b", "y"), False, f)
+        lines = wal.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 2
+
+    def test_pending_elements_returns_payloads(self, tmp_path):
+        _db, debouncer, wal = self._setup(tmp_path)
+        f = tmp_path / "01 TASKS.md"
+        debouncer.wal_record("tasks", self._task("a", "alpha"), False, f)
+        debouncer.wal_record("tasks", self._task("b", "beta"), False, f)
+        elements = debouncer.pending_elements(f)
+        texts = sorted(e.text for e in elements)
+        assert texts == ["alpha", "beta"]
+
+    def test_pending_elements_skips_deletions(self, tmp_path):
+        _db, debouncer, _wal = self._setup(tmp_path)
+        f = tmp_path / "01 TASKS.md"
+        debouncer.wal_record("tasks", self._task("a"), False, f)
+        debouncer.wal_record("tasks", self._task("b"), True, f)
+        ids = {e.id for e in debouncer.pending_elements(f)}
+        assert ids == {"a"}
+
+    def test_pending_elements_filters_by_file(self, tmp_path):
+        _db, debouncer, _wal = self._setup(tmp_path)
+        f1 = tmp_path / "one.md"
+        f2 = tmp_path / "two.md"
+        debouncer.wal_record("tasks", self._task("a"), False, f1)
+        debouncer.wal_record("tasks", self._task("b"), False, f2)
+        assert {e.id for e in debouncer.pending_elements(f1)} == {"a"}
+        assert {e.id for e in debouncer.pending_elements(f2)} == {"b"}
+
+    def test_wal_replay_skips_when_db_matches(self, tmp_path):
+        db, debouncer, _wal = self._setup(tmp_path)
+        f = tmp_path / "01 TASKS.md"
+        t = self._task("a", "v1")
+        # Write to DB, which records to WAL via attach_debouncer.
+        db.update(t, origin=None)
+        # Replay should see DB == WAL and skip.
+        replayed = debouncer.wal_replay(db)
+        assert replayed == 0
+
+    def test_wal_replay_reapplies_when_db_differs(self, tmp_path):
+        db, debouncer, _wal = self._setup(tmp_path)
+        f = tmp_path / "01 TASKS.md"
+        t = self._task("a", "v1")
+        # Record to WAL only, never persist to DB (simulates crash before
+        # DB durability — but our DB is in-memory so we WAL-record manually).
+        debouncer.wal_record("tasks", t, False, f)
+        replayed = debouncer.wal_replay(db)
+        assert replayed == 1
+        [row] = db.query('SELECT * FROM "task"')
+        assert row.text == "v1"
+
+    def test_project_clears_wal_on_success(self, tmp_path):
+        from datetime import timedelta as _td
+
+        from vault.debounce import WriteDebouncer
+        from vault.watcher import Watcher
+
+        watcher = Watcher()
+        wal = tmp_path / ".wal"
+        debouncer = WriteDebouncer(watcher=watcher, wal_path=wal)
+        f = tmp_path / "01 TASKS.md"
+        f.write_text("seed\n", encoding="utf-8")
+
+        called = {"n": 0}
+
+        def writer(p, elems):
+            called["n"] += 1
+
+        debouncer.register_system(
+            name="tasks",
+            lag=_td(milliseconds=0),
+            parent_file_resolver=lambda t: f,
+            writer=writer,
+            elements_for_file=lambda p: [],
+            models={Task.__name__: Task},
+        )
+        debouncer.wal_record("tasks", self._task("a"), False, f)
+        # lag=0 → write-through projection inside enqueue.
+        debouncer.enqueue(f, "tasks")
+        assert called["n"] == 1
+        assert not wal.exists() or wal.read_text(encoding="utf-8") == ""
+
+    def test_project_keeps_wal_on_writer_failure(self, tmp_path):
+        from datetime import timedelta as _td
+
+        from vault.debounce import WriteDebouncer
+        from vault.watcher import Watcher
+
+        watcher = Watcher()
+        wal = tmp_path / ".wal"
+        debouncer = WriteDebouncer(watcher=watcher, wal_path=wal)
+        f = tmp_path / "01 TASKS.md"
+
+        def writer(p, elems):
+            raise RuntimeError("disk full")
+
+        debouncer.register_system(
+            name="tasks",
+            lag=_td(milliseconds=500),
+            parent_file_resolver=lambda t: f,
+            writer=writer,
+            elements_for_file=lambda p: [],
+            models={Task.__name__: Task},
+        )
+        debouncer.wal_record("tasks", self._task("a"), False, f)
+        debouncer.enqueue(f, "tasks")
+        debouncer.flush()
+        # Writer raised → WAL entry must survive for the next attempt.
+        assert wal.read_text(encoding="utf-8").strip() != ""

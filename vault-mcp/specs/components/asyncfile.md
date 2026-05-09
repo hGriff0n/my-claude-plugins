@@ -89,10 +89,39 @@ When a pending entry is eligible:
 1. The debouncer asks the owning parser (registered with the debouncer at parser-`initialize` time — see `arch/parser.md`) to project the file from the current database state.
 2. The parser builds the file content and persists it.
 3. The path is registered with the self-write registry so the resulting file event is suppressed at the watcher.
+4. **Only after** the writer call returns successfully is the WAL cleared for that file. A failed projection leaves the WAL intact so the next tick (or the next process start) retries.
 
 The DB is the source of truth at backport time — the parser does not re-read the file before writing.
+
+### Pending writes and the WAL
+
+The debouncer maintains two pieces of state per file with outstanding edits:
+
+- **`_pending`** — in-memory dirty markers (one entry per file, just `(file, system, eligible_at)`). Drives the resolver loop. Lost on crash.
+- **WAL** — append-and-compact log of per-element mutations (`system`, `model`, `identity`, `deleted`, `file`, `payload`). Survives crashes.
+
+WAL entries are keyed by `(system, model, identity)`. When `wal_record` is called for an element that already has an outstanding entry, the existing line is **replaced in place** rather than appended. This keeps the WAL bounded (one entry per pending element) and matches "latest write wins." The compaction is part of the record operation, not a separate maintenance pass.
+
+On startup, `wal_replay` reads each entry and, for each one, compares the WAL payload against the element currently in the DB:
+
+- **DB matches WAL** → skip; the mutation already reached the DB before the crash. No re-enqueue.
+- **DB differs or element absent** → call `db.update(elem, origin=None)` / `db.delete(elem, origin=None)`. The `origin=None` re-enters the normal write path and repopulates `_pending`, so the next resolver tick projects the file.
+
+Successful projection clears every WAL entry for that file (step 4 above).
+
+### Inbound reconciliation against pending writes
+
+Pending writes represent DB state that has not yet been written to disk. When the watcher fires for a file with outstanding pending writes, the parsed file may legitimately disagree with the DB about elements that are mid-projection. Without reconciliation, the watcher would create a duplicate row whenever it parses an element that the DB already has a pending update for under a different identity (e.g. a task the user typed without an ID, which the DB has since assigned an ID to).
+
+The debouncer exposes a query:
+
+- **`pending_elements(file: Path) -> list[(model, payload)]`** — returns the current WAL entries for `file`, deserialized to their pydantic models. Order is insertion order.
+
+Parsers consult this during their watcher callback **before** issuing a `db.update` for an element they cannot match by identity. The matching rule (which fields constitute "the same element when identity is missing") is parser-specific and lives in the parser spec, not here. If the parser finds a match, it issues the `db.update` using the pending element's identity rather than creating a new one. If it finds no match — or the match is ambiguous — it falls through to the normal create path.
+
+The mechanism itself is content-agnostic. The debouncer exposes pending elements; the parser decides what counts as a match.
 
 ## Open questions
 
 - **Folder-move ordering.** When a user moves an effort folder inside Obsidian, both the effort-level watcher and any per-task watchers under it may fire. Order is non-deterministic across OSes, and the work performed differs depending on which fires first (effort first → tasks re-resolve against the new path; tasks first → tasks emit updates referencing a path the effort hasn't yet relocated). Resolution TBD.
-- **Un-ported database updates.** If the process crashes between an `update(...)` and the debouncer's backport, the DB has state the file does not. On restart, seeding overwrites the DB from disk and the change is lost. Mitigation TBD.
+- **Ambiguous reconciliation matches.** If a parser finds multiple pending elements that plausibly match an unidentified parsed element, current behavior is "fall through to create." This may produce duplicates the user has to clean up. Whether to instead block the write and surface an alert is TBD.

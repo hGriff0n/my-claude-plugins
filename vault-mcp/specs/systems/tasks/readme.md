@@ -35,7 +35,7 @@ A taskfile is the unit of scan; individual tasks are extracted by `parse`.
     - **Emoji**: known emoji → next whitespace token is the value (`📅 2026-02-15` → `due=2026-02-15`). Unknown emoji greedily consume tokens until the next metadata token.
     - **Hashtag**: `#name` → flag tag with empty value; `#name:value` → tag with value.
     - **Dataview**: `[name::value]` or `(name::value)` → tag with value, name added to `dataview_tags`. Tags `estimate`, `actual`, `effort` are always re-rendered as dataview on write regardless of original syntax.
-  - `id` ← `tags["id"]` if present (any of the three syntaxes); if absent, generated and written back via `update_id`.
+  - `id` ← `tags["id"]` if present (any of the three syntaxes); if absent, the parser consults pending writes for this file before generating a new id (see *Pending-write reconciliation* below). If no match, an id is generated and written back via `update_id`.
   - `type` ← `MILESTONE` if the line is an L4 heading (`#### …`), or — for back-compat — if the task is under a milestones heading or carries a `milestone` tag; else `TASK`.
 
   In addition to `- [ ]` task lines, the parser also recognises:
@@ -63,6 +63,23 @@ The parser's `Update` type enumerates:
 - `update_id` — internal write used by `parse` to backfill a missing `id` tag; not exposed externally.
 
 All writes are direct file I/O batched through `vault/debounce.py` (see `arch/parser.md`).
+
+### Pending-write reconciliation
+
+When `parse` encounters a task line with no `id` tag, the file may already have outstanding pending writes for that task — for example: the user typed the task without an id, the parser previously assigned one and enqueued a backport, the user kept editing before the projection landed, and the watcher is firing again on the still-id-less line.
+
+Before generating a new id, the parser queries the debouncer:
+
+1. Call `debouncer.pending_elements(file)` to get the list of pending `Task` payloads for this file.
+2. **Match rule** — task text prefix. A pending task matches the parsed line iff the pending task's `text` is a prefix of the parsed line's title (i.e. the parsed title starts with the pending text at position 0). The parsed title is the portion that becomes `text` after stripping the checkbox prefix and metadata tail. This allows the user to extend a task's text in Obsidian during the lag window and still reconcile against the pending write. Tags, indent, and surrounding heading are not part of the key.
+3. **Resolution**:
+   - **Exactly one match** → adopt the pending task's `id` rather than generating a new one. No `update_id` write is issued (the pending backport will write the id to disk on its next eligible tick).
+   - **Zero matches** → generate a new id and `update_id` as today.
+   - **Multiple matches** (e.g. two pending tasks share the same text) → generate a new id and `update_id`. This is the duplicate-task case; the open question in `components/asyncfile.md` covers whether to upgrade this to a hard alert.
+
+The match runs per parsed line, independent of position in the file, so reordering tasks or inserting new lines above a pending task does not break reconciliation.
+
+Other task fields (status, tags, dependencies) are *not* part of the match key — the user may have edited them between the pending write and the current parse, and the parsed values win on the next `update`.
 
 ## Routes
 
