@@ -184,27 +184,56 @@ def _render_archive_block(
 
 
 def _append_to_daily_note(
-    vault_root: Path, daily_rel: Path, content: str,
+    vault_root: Path, daily_rel: Path, content: str, count: int,
 ) -> None:
     absolute = vault_root / daily_rel
-    full = f"## Completed Tasks\n\n{content}"
-    chunks = split_on_line_boundaries(full, CONTENT_CHUNK_BYTES)
     path_arg = f"path={daily_rel.as_posix()}"
-    first, *rest = chunks
-    if absolute.exists():
-        r = obsidian_cli("append", path_arg, f"content={first}")
+
+    if not absolute.exists():
+        r = obsidian_cli("create", "template=daily", path_arg)
+        if r.returncode != 0:
+            raise RuntimeError(
+                f"Daily-note create failed: path={daily_rel}, error={r.stderr.strip()}"
+            )
+        has_section = False
     else:
-        r = obsidian_cli("create", "template=daily", path_arg, f"content={first}")
-    if r.returncode != 0:
-        raise RuntimeError(
-            f"Daily-note write failed: path={daily_rel}, error={r.stderr.strip()}"
+        existing = absolute.read_text(encoding="utf-8")
+        has_section = any(
+            line.strip() == "### Completed Tasks"
+            for line in existing.splitlines()
         )
-    for chunk in rest:
+
+    if not has_section:
+        r = obsidian_cli("append", path_arg, "content=### Completed Tasks")
+        if r.returncode != 0:
+            raise RuntimeError(
+                f"Daily-note heading append failed: path={daily_rel}, error={r.stderr.strip()}"
+            )
+
+    for chunk in split_on_line_boundaries(content, CONTENT_CHUNK_BYTES):
         r = obsidian_cli("append", path_arg, f"content={chunk}")
         if r.returncode != 0:
             raise RuntimeError(
                 f"Daily-note append failed: path={daily_rel}, error={r.stderr.strip()}"
             )
+
+    r = obsidian_cli("property:read", path_arg, "name=completed_tasks")
+    current = 0
+    if r.returncode == 0:
+        stdout = r.stdout.strip()
+        if stdout:
+            try:
+                current = int(stdout)
+            except ValueError:
+                current = 0
+    r = obsidian_cli(
+        "property:set", path_arg, "name=completed_tasks",
+        f"value={current + count}", "type=number",
+    )
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"Daily-note property set failed: path={daily_rel}, error={r.stderr.strip()}"
+        )
 
 
 @router.post(
@@ -250,7 +279,7 @@ def task_archive(
         content = _render_archive_block(tasks, all_ids)
         daily_rel = _daily_note_path(date_str)
         try:
-            _append_to_daily_note(vault_root, daily_rel, content)
+            _append_to_daily_note(vault_root, daily_rel, content, len(tasks))
         except Exception as e:
             log.error("Archive failed for date %s: %s", date_str, e)
             failures.append(date_str)

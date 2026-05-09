@@ -1,6 +1,6 @@
 """Tests for POST /tasks/archive."""
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from routes.tasks._testing import make_client, make_vault
 from routes.tasks.archive.route import router
@@ -127,6 +127,106 @@ def test_archive_reopens_parent_with_open_descendant(tmp_path):
     )
     assert parent.status.value in {"OPEN", "BLOCKED"}
     assert "ar4002" in parent.dependencies.blocked
+
+
+def test_archive_creates_daily_note_without_content_arg(tmp_path):
+    vault = make_vault(tmp_path)
+    (vault / ROOT_TASKFILE).write_text(
+        "- [x] Done ✅ 2026-05-01 🆔 ar6001\n", encoding="utf-8",
+    )
+    client, _ = make_client(vault, router)
+
+    with patch(
+        "routes.tasks.archive.route.obsidian_cli",
+        side_effect=fake_obsidian_create(vault),
+    ) as cli:
+        resp = _post_archive(client)
+
+    assert resp.status_code == 200
+    create_calls = [c.args for c in cli.call_args_list if c.args[0] == "create"]
+    assert len(create_calls) == 1
+    assert "template=daily" in create_calls[0]
+    assert not any(a.startswith("content=") for a in create_calls[0])
+
+
+def test_archive_appends_heading_and_sets_property(tmp_path):
+    vault = make_vault(tmp_path)
+    (vault / ROOT_TASKFILE).write_text(
+        "- [x] One ✅ 2026-05-01 🆔 ar7001\n"
+        "- [x] Two ✅ 2026-05-01 🆔 ar7002\n",
+        encoding="utf-8",
+    )
+    client, _ = make_client(vault, router)
+
+    with patch(
+        "routes.tasks.archive.route.obsidian_cli",
+        side_effect=fake_obsidian_create(vault),
+    ) as cli:
+        resp = _post_archive(client)
+
+    assert resp.status_code == 200
+    cmds = [c.args for c in cli.call_args_list]
+
+    heading_appends = [
+        c for c in cmds
+        if c[0] == "append" and "content=### Completed Tasks" in c[1:]
+    ]
+    assert len(heading_appends) == 1
+
+    prop_sets = [c for c in cmds if c[0] == "property:set"]
+    assert len(prop_sets) == 1
+    args = prop_sets[0]
+    assert "name=completed_tasks" in args
+    assert "value=2" in args
+    assert "type=number" in args
+
+
+def test_archive_skips_heading_when_section_exists(tmp_path):
+    vault = make_vault(tmp_path)
+    (vault / ROOT_TASKFILE).write_text(
+        "- [x] Done ✅ 2026-05-01 🆔 ar8001\n", encoding="utf-8",
+    )
+    daily = vault / "areas" / "journal" / "2026" / "05 May" / "01.md"
+    daily.parent.mkdir(parents=True, exist_ok=True)
+    daily.write_text("### Completed Tasks\n\n- existing\n", encoding="utf-8")
+    client, _ = make_client(vault, router)
+
+    with patch(
+        "routes.tasks.archive.route.obsidian_cli",
+        side_effect=fake_obsidian_create(vault),
+    ) as cli:
+        resp = _post_archive(client)
+
+    assert resp.status_code == 200
+    cmds = [c.args for c in cli.call_args_list]
+    assert not any(c[0] == "create" for c in cmds)
+    assert not any(
+        c[0] == "append" and "content=### Completed Tasks" in c[1:]
+        for c in cmds
+    )
+
+
+def test_archive_increments_existing_completed_tasks_property(tmp_path):
+    vault = make_vault(tmp_path)
+    (vault / ROOT_TASKFILE).write_text(
+        "- [x] Done ✅ 2026-05-01 🆔 ar9001\n", encoding="utf-8",
+    )
+    client, _ = make_client(vault, router)
+
+    base_fake = fake_obsidian_create(vault)
+
+    def fake(*args: str):
+        if args and args[0] == "property:read":
+            return Mock(returncode=0, stdout="5", stderr="")
+        return base_fake(*args)
+
+    with patch("routes.tasks.archive.route.obsidian_cli", side_effect=fake) as cli:
+        resp = _post_archive(client)
+
+    assert resp.status_code == 200
+    prop_sets = [c.args for c in cli.call_args_list if c.args[0] == "property:set"]
+    assert len(prop_sets) == 1
+    assert "value=6" in prop_sets[0]
 
 
 def test_archive_groups_by_completion_date(tmp_path):
