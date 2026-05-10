@@ -9,8 +9,8 @@ from typing import List, Protocol
 
 class Parser[ItemType, UpdateTypes](Protocol):
     @abstractmethod
-    def initialize(self, db, watcher, debouncer) -> None:
-        """One-time setup: register debouncer config and initial watchers.
+    def initialize(self, db, watcher) -> None:
+        """One-time setup: register initial watchers.
 
         Initial watcher registrations fire immediately on existing matching
         state; those firings call `parse(...)` and seed the database. Table
@@ -29,15 +29,4 @@ class Parser[ItemType, UpdateTypes](Protocol):
     @abstractmethod
     def update(self, elem: ItemType, op: UpdateTypes) -> None:
         """Apply a write operation to the database (no file I/O)."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def write(self, file: Path, elements: List[ItemType]) -> None:
-        """Project the database state for `file` to disk.
-
-        Called by the write debouncer. The DB is the source of truth;
-        existing on-disk content must not be consulted. The chosen backend
-        registers the resulting file event with the watcher's self-write
-        registry.
-        """
         raise NotImplementedError

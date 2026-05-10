@@ -3,20 +3,12 @@
 import sys
 from datetime import date
 from pathlib import Path
-from unittest.mock import patch
-
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from schemas.efforts import EffortStatus  # noqa: E402
 from schemas.tasks import TaskStatus  # noqa: E402
-from vault.efforts.parser import (  # noqa: E402
-    CreateEffort,
-    EffortParser,
-    MoveEffort,
-    REQUIRED_FILES,
-)
+from vault.efforts.parser import EffortParser  # noqa: E402
 
 
 def _make_effort(root: Path, *parts: str, frontmatter: str = "", body: str = "") -> Path:
@@ -113,104 +105,3 @@ class TestParse:
         (d / "CLAUDE.md").write_text("c")
         assert EffortParser(root).parse(d) == []
 
-
-def _placeholder(name: str, path: str | None = None):
-    from schemas.efforts import DisplayDetails, Effort, TaskStats
-    from schemas.time import TimeBlock
-
-    return Effort(
-        name=name,
-        path=Path(path or f"efforts/{name}"),
-        status=EffortStatus.ACTIVE,
-        description="",
-        time_details=TimeBlock(),
-        display=DisplayDetails(
-            task_stats=TaskStats(num_by_status={s.value: 0 for s in TaskStatus})
-        ),
-    )
-
-
-class TestWriteScaffold:
-    """`write(folder, [effort])` scaffolds a new effort when the folder is missing."""
-
-    def _stub_obsidian(self):
-        calls = []
-
-        def fake(*args):
-            calls.append(args)
-
-            class Result:
-                returncode = 0
-                stderr = ""
-                stdout = ""
-
-            return Result()
-
-        return calls, fake
-
-    def test_scaffolds_three_files(self, tmp_path):
-        root = _vault(tmp_path)
-        target = root / "efforts" / "alpha"
-        calls, fake = self._stub_obsidian()
-        with patch("vault.efforts.parser.obsidian_cli", side_effect=fake):
-            EffortParser(root).write(target, [_placeholder("alpha")])
-        path_args = sorted(
-            arg[len("path="):] for call in calls for arg in call
-            if isinstance(arg, str) and arg.startswith("path=")
-        )
-        assert path_args == ["efforts/alpha/00 README", "efforts/alpha/01 TASKS", "efforts/alpha/CLAUDE"]
-        assert target.is_dir()
-
-    def test_nests_existing_placeholder(self, tmp_path):
-        root = _vault(tmp_path)
-        target = root / "efforts" / "alpha"
-        target.mkdir(parents=True)
-        (target / "scratch.md").write_text("notes", encoding="utf-8")
-        calls, fake = self._stub_obsidian()
-        with patch("vault.efforts.parser.obsidian_cli", side_effect=fake):
-            EffortParser(root).write(target, [_placeholder("alpha")])
-        assert (target / "alpha" / "scratch.md").exists()
-
-    def test_moves_ideas_placeholder(self, tmp_path):
-        root = _vault(tmp_path)
-        target = root / "efforts" / "alpha"
-        ideas_dir = root / "efforts" / "__ideas" / "alpha"
-        ideas_dir.mkdir(parents=True)
-        (ideas_dir / "draft.md").write_text("draft", encoding="utf-8")
-        calls, fake = self._stub_obsidian()
-        with patch("vault.efforts.parser.obsidian_cli", side_effect=fake):
-            EffortParser(root).write(target, [_placeholder("alpha")])
-        assert (target / "alpha" / "draft.md").exists()
-        assert not ideas_dir.exists()
-
-
-class TestWriteRelocate:
-    """`write(target, [effort])` relocates an existing folder to the new path."""
-
-    def test_active_to_backlog(self, tmp_path):
-        root = _vault(tmp_path)
-        _make_effort(root, "efforts", "alpha", body="# Alpha\n")
-        target = root / "efforts" / "__backlog" / "alpha"
-        EffortParser(root).write(target, [_placeholder("alpha", "efforts/__backlog/alpha")])
-        assert not (root / "efforts" / "alpha" / "CLAUDE.md").exists()
-        assert (target / "CLAUDE.md").exists()
-
-    def test_backlog_to_active(self, tmp_path):
-        root = _vault(tmp_path)
-        _make_effort(root, "efforts", "__backlog", "alpha", body="# Alpha\n")
-        target = root / "efforts" / "alpha"
-        EffortParser(root).write(target, [_placeholder("alpha")])
-        assert (target / "CLAUDE.md").exists()
-        assert not (root / "efforts" / "__backlog" / "alpha").exists()
-
-
-class TestWriteArchive:
-    def test_empty_elements_removes_existing_folder(self, tmp_path):
-        root = _vault(tmp_path)
-        folder = _make_effort(root, "efforts", "alpha", body="# Alpha\n")
-        EffortParser(root).write(folder, [])
-        assert not folder.exists()
-
-    def test_empty_elements_missing_folder_noop(self, tmp_path):
-        root = _vault(tmp_path)
-        EffortParser(root).write(root / "efforts" / "ghost", [])  # no error

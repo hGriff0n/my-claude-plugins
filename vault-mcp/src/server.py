@@ -1,9 +1,9 @@
 """
 Vault MCP Server entry point.
 
-Implements `specs/components/server.md`. Wires the database, watcher,
-write debouncer, and parsers, then exposes the FastAPI app as both REST
-and an MCP server via `FastMCP.from_fastapi`.
+Implements `specs/components/server.md`. Wires the database, watcher, and
+parsers, then exposes the FastAPI app as both REST and an MCP server via
+`FastMCP.from_fastapi`.
 """
 
 import logging
@@ -26,7 +26,6 @@ from routes.routes import router as api_router
 from schemas.efforts import Effort
 from schemas.tasks import Task
 from utils.obsidian import obsidian_cli
-from vault.debounce import WriteDebouncer
 from vault.efforts.parser import EffortParser
 from vault.tasks.parser import TaskParser
 from vault.watcher import Watcher
@@ -57,10 +56,6 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-WAL_PATH = _log_dir / "pending_writes.jsonl"
-DB_PATH = _log_dir / "vault-mcp.db"
-
-
 _state: dict = {"parsers_initialized": False}
 _state_lock = threading.Lock()
 _server: uvicorn.Server | None = None
@@ -81,7 +76,6 @@ def _probe_vault_root() -> Path | None:
 def _initialize_parsers(
     db: Database,
     watcher: Watcher,
-    debouncer: WriteDebouncer,
     vault_root: Path,
 ) -> tuple[EffortParser, TaskParser]:
     """Step 6 — parser initialization (deferred in degraded mode)."""
@@ -91,17 +85,14 @@ def _initialize_parsers(
 
     # Tasks initialize first so the effort parser's seed callbacks can
     # call task_parser.register_taskfile (it needs an attached watcher).
-    task_parser.initialize(db, watcher, debouncer)
-    effort_parser.initialize(db, watcher, debouncer)
-
-    debouncer.wal_replay(db)
+    task_parser.initialize(db, watcher)
+    effort_parser.initialize(db, watcher)
     return effort_parser, task_parser
 
 
 def _vault_init_retry_loop(
     db: Database,
     watcher: Watcher,
-    debouncer: WriteDebouncer,
     rest_app: FastAPI,
 ) -> None:
     while True:
@@ -119,14 +110,13 @@ def _vault_init_retry_loop(
             continue
         try:
             effort_parser, task_parser = _initialize_parsers(
-                db, watcher, debouncer, vault_root,
+                db, watcher, vault_root,
             )
         except Exception:
             log.exception("Deferred parser init failed")
             continue
         set_app(App(db=db, effort_parser=effort_parser, task_parser=task_parser))
         watcher.start()
-        debouncer.start()
         with _state_lock:
             _state["parsers_initialized"] = True
         log.info("Parser init complete; degraded mode lifted")
@@ -142,11 +132,10 @@ def main() -> None:
         redirect_slashes=False,
     )
 
-    # Step 3: database, watcher, debouncer
-    db = Database(path=str(DB_PATH))
+    # Step 3: database (in-memory; SQL file-backing disabled until WAL/
+    # write-back returns) and watcher.
+    db = Database(path=":memory:")
     watcher = Watcher()
-    debouncer = WriteDebouncer(watcher=watcher, wal_path=WAL_PATH)
-    db.attach_debouncer(debouncer)
 
     # Step 4: register tables for every system (Obsidian-independent)
     db.register(Effort, system="efforts")
@@ -161,7 +150,7 @@ def main() -> None:
     if vault_root is not None:
         try:
             effort_parser, task_parser = _initialize_parsers(
-                db, watcher, debouncer, vault_root,
+                db, watcher, vault_root,
             )
             with _state_lock:
                 _state["parsers_initialized"] = True
@@ -176,10 +165,9 @@ def main() -> None:
     # Step 7: routes
     rest_app.include_router(api_router)
 
-    # Step 8: start watcher + debouncer loops (only if initialized)
+    # Step 8: start watcher loop (only if initialized)
     if _state["parsers_initialized"]:
         watcher.start()
-        debouncer.start()
     else:
         log.warning(
             "Degraded mode: vault-dependent endpoints will return 503 until "
@@ -217,7 +205,7 @@ def main() -> None:
     if not _state["parsers_initialized"]:
         threading.Thread(
             target=_vault_init_retry_loop,
-            args=(db, watcher, debouncer, rest_app),
+            args=(db, watcher, rest_app),
             name="vault-init-retry",
             daemon=True,
         ).start()
@@ -228,7 +216,6 @@ def main() -> None:
         log.error("Exception: %s", e)
     finally:
         try:
-            debouncer.stop()
             watcher.stop()
         except Exception:
             log.exception("Error during shutdown")

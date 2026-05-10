@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
@@ -21,8 +21,8 @@ from schemas.time import TimeBlock
 from utils.formatting import EMOJI_TO_TAG, render_tags
 from utils.ids import generate_task_id
 from vault.parser import Parser
-from vault.efforts.parser import BACKLOG_DIR, EFFORTS_DIR, EffortParser
-from vault.watcher import EventType, WatchCriterion, WatcherHandle, active_origin
+from vault.efforts.parser import BACKLOG_DIR, EFFORTS_DIR
+from vault.watcher import EventType, WatchCriterion, WatcherHandle
 
 log = logging.getLogger(__name__)
 
@@ -113,26 +113,13 @@ class TaskParser:
         self.vault_root = vault_root
         self._db: Any = None
         self._watcher: Any = None
-        self._debouncer: Any = None
         self._taskfile_handles: Dict[Path, WatcherHandle] = {}
-        # IDs auto-assigned during the most recent parse() call. Read by
-        # _on_taskfile_event so DB-first ID state can be WAL-recorded.
-        self._last_auto_ids: Set[str] = set()
 
     # ---- initialize ----
 
-    def initialize(self, db: Any, watcher: Any, debouncer: Any) -> None:
+    def initialize(self, db: Any, watcher: Any) -> None:
         self._db = db
         self._watcher = watcher
-        self._debouncer = debouncer
-        debouncer.register_system(
-            name=SYSTEM_NAME,
-            lag=timedelta(milliseconds=500),
-            parent_file_resolver=self._parent_file,
-            writer=self.write,
-            elements_for_file=self._elements_for_file,
-            models={Task.__name__: Task},
-        )
         # Global taskfile (no owning effort).
         root = self.vault_root / ROOT_TASKFILE
         self.register_taskfile(root)
@@ -145,16 +132,6 @@ class TaskParser:
         )
         logging.info(f'[TASKS] Registering watcher for file={taskfile}')
         self._taskfile_handles[taskfile] = handle
-
-    def _parent_file(self, task: Task) -> Path:
-        # Resolver returns the canonical path regardless of whether the file
-        # currently exists on disk; debouncer creates it if needed.
-        if task.effort == "none":
-            return self.vault_root / ROOT_TASKFILE
-        backlog = self.vault_root / EFFORTS_DIR / BACKLOG_DIR / task.effort / ROOT_TASKFILE
-        if backlog.is_file():
-            return backlog
-        return self.vault_root / EFFORTS_DIR / task.effort / ROOT_TASKFILE
 
     def _elements_for_file(self, file: Path) -> List[Task]:
         try:
@@ -185,33 +162,17 @@ class TaskParser:
     ) -> None:
         if event == EventType.DELETE:
             for task in self._elements_for_file(file):
-                self._db.delete(task, origin=handle)
+                self._db.delete(task)
         elif file.is_file():
-            tasks = self.parse(file)
-            auto_ids = self._last_auto_ids
-            for task in tasks:
-                self._db.update(task, origin=handle)
-                if task.id in auto_ids and self._debouncer is not None:
-                    # Auto-assigned ID is DB-first state; the file event
-                    # carried no ID for this task. Record to WAL so a crash
-                    # before backport doesn't lose the ID-to-text mapping.
-                    self._debouncer.wal_record(
-                        system=SYSTEM_NAME,
-                        elem=task,
-                        deleted=False,
-                        file=file,
-                    )
+            for task in self.parse(file):
+                self._db.update(task)
         self.prune_dangling_refs()
 
     def prune_dangling_refs(self) -> None:
         """Drop blocked / parent / child references to ids no longer in the table.
 
-        Runs after every parse cycle (initial seed and watcher-driven
-        re-parses) so the index converges to a state where every reference
-        resolves to a live task. Pruning is always DB-first: the new
-        dependency state isn't in the file, so each modified task is
-        written with origin=None so `_after_write` records it to the WAL
-        and enqueues a backport.
+        Runs after every parse cycle so the in-memory index converges to a
+        state where every reference resolves to a live task.
         """
         tasks = self._db.query('SELECT * FROM "task"')
         valid_ids = {t.id for t in tasks}
@@ -231,7 +192,7 @@ class TaskParser:
             )
             if task.status == TaskStatus.BLOCKED and not new_blocked:
                 task.status = TaskStatus.OPEN
-            self._db.update(task, origin=None)
+            self._db.update(task)
 
     def parse(self, file: Path) -> List[Task]:
         file = Path(file)
@@ -244,17 +205,7 @@ class TaskParser:
         effort_name = self._effort_for(file)
         last_updated = date.fromtimestamp(file.stat().st_mtime)
 
-        pending = self._pending_tasks_for(file)
-        records, wrote_back = self._collect_records(lines, body_start, pending)
-        self._last_auto_ids = {
-            r.tags["id"] for r in records if r.auto_id_assigned
-        }
-        if wrote_back and self._debouncer is not None:
-            # Auto-assigned IDs reach disk via the debouncer's normal backport
-            # rather than an inline write, so a concurrent edit in Obsidian
-            # can't be clobbered by a stale read+rewrite from this thread.
-            self._debouncer.enqueue(file, SYSTEM_NAME)
-
+        records = self._collect_records(lines, body_start)
         notes_by_id = self._collect_notes(lines, body_start)
 
         children_of: Dict[str, List[str]] = {r.tags["id"]: [] for r in records}
@@ -274,14 +225,13 @@ class TaskParser:
         ]
 
     def update(self, task: Task, op: Update) -> None:
-        origin = active_origin()
         if isinstance(op, CreateTask):
             if not task.id:
                 task.id = generate_task_id()
-            self._db.update(task, origin=origin)
+            self._db.update(task)
             return
         if isinstance(op, ArchiveTask):
-            self._db.delete(task, origin=origin)
+            self._db.delete(task)
             return
         if isinstance(op, UpdateStatus):
             task.status = op.status
@@ -298,84 +248,17 @@ class TaskParser:
                 task.time_details = op.time_details
         else:
             raise TypeError(f"Unknown Update: {op!r}")
-        self._db.update(task, origin=origin)
-
-    def write(self, file: Path, elements: List[Task]) -> None:
-        """Project tasks to disk by rewriting the taskfile body.
-
-        Builds an ephemeral TASKFILE wrapper from `file`'s frontmatter and
-        the parentless `elements` to drive a uniform recursive emit.
-        Frontmatter is read from disk because TASKFILE tasks aren't
-        persisted in the DB.
-        """
-        if not elements and not file.exists():
-            return
-        file.parent.mkdir(parents=True, exist_ok=True)
-
-        frontmatter_notes = (
-            _frontmatter_to_notes(file) if file.is_file() else []
-        )
-
-        by_id = {t.id: t for t in elements}
-        children_by_parent: Dict[str, List[Task]] = {}
-        roots: List[Task] = []
-        for task in elements:
-            parent = task.dependencies.parent
-            if parent and parent in by_id:
-                children_by_parent.setdefault(parent, []).append(task)
-            else:
-                roots.append(task)
-
-        lines: List[str] = []
-
-        def emit(task: Task, depth: int) -> None:
-            if task.type == TaskType.MILESTONE:
-                if lines and lines[-1] != "":
-                    lines.append("")
-                lines.append(_render_milestone_line(task))
-                lines.append("")
-                for child in children_by_parent.get(task.id, []):
-                    emit(child, 0)
-                return
-            lines.append(_render_task_line(task, depth))
-            for note in task.notes:
-                lines.append("    " * (depth + 1) + "- " + note)
-            for child in children_by_parent.get(task.id, []):
-                emit(child, depth + 1)
-
-        if frontmatter_notes:
-            lines.append("---")
-            lines.extend(frontmatter_notes)
-            lines.append("---")
-            lines.append("")
-
-        for task in roots:
-            emit(task, 0)
-
-        file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self._db.update(task)
 
     # ---- parse helpers ----
 
-    def _pending_tasks_for(self, file: Path) -> List[Task]:
-        if self._debouncer is None:
-            return []
-        try:
-            elements = self._debouncer.pending_elements(file)
-        except Exception:
-            log.exception("pending_elements lookup failed for %s", file)
-            return []
-        return [e for e in elements if isinstance(e, Task)]
-
     def _collect_records(
         self, lines: List[str], body_start: int,
-        pending: Optional[List[Task]] = None,
-    ) -> Tuple[List["_Record"], bool]:
+    ) -> List["_Record"]:
         records: List[_Record] = []
         stack: List[_Record] = []
         section = ""
         current_milestone: Optional[_Record] = None
-        wrote_back = False
-        candidates: List[Task] = list(pending or [])
 
         for i in range(body_start, len(lines)):
             raw = lines[i]
@@ -386,18 +269,8 @@ class TaskParser:
                 ms = _MILESTONE_HEADING_RE.match(stripped)
                 if ms:
                     title, tags, dataview_tags = _split_tags(ms.group(1))
-                    auto_id = False
                     if not tags.get("id"):
-                        adopted = _adopt_pending_id(title, candidates)
-                        if adopted is not None:
-                            tags["id"] = adopted
-                        else:
-                            tags["id"] = generate_task_id()
-                            lines[i] = _build_milestone_heading(
-                                title, tags, dataview_tags,
-                            )
-                            wrote_back = True
-                            auto_id = True
+                        tags["id"] = generate_task_id()
                     rec = _Record(
                         indent=-1,
                         checkbox="",
@@ -407,7 +280,6 @@ class TaskParser:
                         section=section,
                         parent=None,
                         type=TaskType.MILESTONE,
-                        auto_id_assigned=auto_id,
                     )
                     records.append(rec)
                     current_milestone = rec
@@ -428,16 +300,8 @@ class TaskParser:
             checkbox = m.group(2)
             title, tags, dataview_tags = _split_tags(m.group(3))
 
-            auto_id = False
             if not tags.get("id"):
-                adopted = _adopt_pending_id(title, candidates)
-                if adopted is not None:
-                    tags["id"] = adopted
-                else:
-                    tags["id"] = generate_task_id()
-                    lines[i] = _build_line(indent, checkbox, title, tags, dataview_tags)
-                    wrote_back = True
-                    auto_id = True
+                tags["id"] = generate_task_id()
 
             while stack and stack[-1].indent >= indent:
                 stack.pop()
@@ -458,11 +322,10 @@ class TaskParser:
                 section=section,
                 parent=parent,
                 type=TaskType.MILESTONE if is_milestone_tag else TaskType.TASK,
-                auto_id_assigned=auto_id,
             )
             records.append(rec)
             stack.append(rec)
-        return records, wrote_back
+        return records
 
     def _collect_notes(
         self, lines: List[str], body_start: int,
@@ -545,19 +408,6 @@ class TaskParser:
             time_details=time_details,
         )
 
-    # ---- write helpers ----
-
-    def _taskfile_for(self, effort: str) -> Path:
-        if effort == "none":
-            return self.vault_root / ROOT_TASKFILE
-        active = self.vault_root / EFFORTS_DIR / effort / ROOT_TASKFILE
-        if active.is_file():
-            return active
-        backlog = self.vault_root / EFFORTS_DIR / BACKLOG_DIR / effort / ROOT_TASKFILE
-        if backlog.is_file():
-            return backlog
-        raise FileNotFoundError(f"No taskfile for effort {effort!r}")
-
     def _effort_for(self, file: Path) -> str:
         try:
             rel = file.relative_to(self.vault_root)
@@ -572,6 +422,9 @@ class TaskParser:
             if len(parts) == 3:
                 return parts[1]
         return "none"
+
+
+# ---- formatting helpers (used by archive route) ---------------------------
 
 
 def _build_meta_tags(task: Task) -> Dict[str, str]:
@@ -594,6 +447,29 @@ def _build_meta_tags(task: Task) -> Dict[str, str]:
     return tags
 
 
+def _build_line(
+    indent_level: int,
+    checkbox: str,
+    title: str,
+    tags: Dict[str, str],
+    dataview_tags: Set[str],
+) -> str:
+    indent = "    " * indent_level
+    tag_str = render_tags(tags, dataview_tags)
+    if tag_str:
+        return f"{indent}- [{checkbox}] {title} {tag_str}"
+    return f"{indent}- [{checkbox}] {title}"
+
+
+def _build_milestone_heading(
+    title: str, tags: Dict[str, str], dataview_tags: Set[str],
+) -> str:
+    tag_str = render_tags(tags, dataview_tags)
+    if tag_str:
+        return f"#### {title} {tag_str}"
+    return f"#### {title}"
+
+
 def _render_task_line(task: Task, depth: int) -> str:
     return _build_line(
         indent_level=depth,
@@ -610,33 +486,6 @@ def _render_milestone_line(task: Task) -> str:
     )
 
 
-def _build_milestone_heading(
-    title: str, tags: Dict[str, str], dataview_tags: Set[str],
-) -> str:
-    tag_str = render_tags(tags, dataview_tags)
-    if tag_str:
-        return f"#### {title} {tag_str}"
-    return f"#### {title}"
-
-
-def _frontmatter_to_notes(file: Path) -> List[str]:
-    fm = _read_frontmatter(file)
-    if not fm:
-        return []
-    fm_lines = fm.splitlines()
-    inner: List[str] = []
-    started = False
-    for line in fm_lines:
-        if line.strip() == "---":
-            if not started:
-                started = True
-                continue
-            break
-        if started:
-            inner.append(line)
-    return [ln for ln in inner if ln.strip()]
-
-
 # ---- record / private helpers ----------------------------------------------
 
 
@@ -650,22 +499,6 @@ class _Record:
     section: str
     parent: Optional["_Record"]
     type: TaskType = TaskType.TASK
-    auto_id_assigned: bool = False
-
-
-def _adopt_pending_id(title: str, candidates: List[Task]) -> Optional[str]:
-    """Match an id-less parsed task against pending writes by text prefix.
-
-    Returns the pending task's id if exactly one candidate's `text` is a
-    prefix of `title`. Removes the matched candidate so it can't be
-    consumed twice in the same parse. Zero or multiple matches → None,
-    caller falls through to generating a fresh id.
-    """
-    matches = [c for c in candidates if title.startswith(c.text)]
-    if len(matches) != 1:
-        return None
-    candidates.remove(matches[0])
-    return matches[0].id
 
 
 def _indent_level(indent: str) -> int:
@@ -685,24 +518,6 @@ def _is_emoji_key(name: str) -> bool:
     return any(emoji.is_emoji(c) for c in name)
 
 
-def _read_frontmatter(file: Path) -> str:
-    """Return the leading `--- ... ---` block verbatim, or empty string."""
-    try:
-        text = file.read_text(encoding="utf-8")
-    except OSError:
-        return ""
-    lines = text.splitlines()
-    i = 0
-    while i < len(lines) and not lines[i].strip():
-        i += 1
-    if i >= len(lines) or lines[i].strip() != "---":
-        return ""
-    for j in range(i + 1, len(lines)):
-        if lines[j].strip() == "---":
-            return "\n".join(lines[: j + 1])
-    return ""
-
-
 def _skip_frontmatter(lines: List[str]) -> int:
     i = 0
     while i < len(lines) and not lines[i].strip():
@@ -713,33 +528,6 @@ def _skip_frontmatter(lines: List[str]) -> int:
         if lines[j].strip() == "---":
             return j + 1
     return 0
-
-
-def _build_line(
-    indent_level: int,
-    checkbox: str,
-    title: str,
-    tags: Dict[str, str],
-    dataview_tags: Set[str],
-) -> str:
-    indent = "    " * indent_level
-    tag_str = render_tags(tags, dataview_tags)
-    if tag_str:
-        return f"{indent}- [{checkbox}] {title} {tag_str}"
-    return f"{indent}- [{checkbox}] {title}"
-
-
-def _find_task_line(lines: List[str], task_id: str) -> Optional[int]:
-    for i, raw in enumerate(lines):
-        if raw.lstrip().startswith("- [["):
-            continue
-        m = _TASK_RE.match(raw)
-        if m is None:
-            continue
-        _t, tags, _dv = _split_tags(m.group(3))
-        if tags.get("id") == task_id:
-            return i
-    return None
 
 
 # ---- tag tail parsing (mirrors src/parsers/task_parser.py) -----------------

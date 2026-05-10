@@ -9,9 +9,8 @@ system (`specs/systems/efforts/readme.md`). An effort is a folder under
 from __future__ import annotations
 
 import logging
-import shutil
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, List, Literal, Optional, Union
 
@@ -20,9 +19,8 @@ import yaml
 from schemas.efforts import DisplayDetails, Effort, EffortStatus, TaskStats
 from schemas.tasks import TaskStatus
 from schemas.time import TimeBlock
-from utils.obsidian import obsidian_cli
 from vault.parser import Parser
-from vault.watcher import EventType, WatchCriterion, WatcherHandle, active_origin
+from vault.watcher import EventType, WatchCriterion, WatcherHandle
 
 log = logging.getLogger(__name__)
 
@@ -109,7 +107,6 @@ class EffortParser:
         self.vault_root = Path(vault_root)
         self._db: Any = None
         self._watcher: Any = None
-        self._debouncer: Any = None
         self._task_parser: Any = None
         self._effort_handles: dict[Path, WatcherHandle] = {}
 
@@ -127,18 +124,9 @@ class EffortParser:
 
     # ---- initialize ----
 
-    def initialize(self, db: Any, watcher: Any, debouncer: Any) -> None:
+    def initialize(self, db: Any, watcher: Any) -> None:
         self._db = db
         self._watcher = watcher
-        self._debouncer = debouncer
-        debouncer.register_system(
-            name=SYSTEM_NAME,
-            lag=timedelta(0),
-            parent_file_resolver=self._parent_file,
-            writer=self.write,
-            elements_for_file=self._elements_for_file,
-            models={Effort.__name__: Effort},
-        )
 
         events = frozenset({EventType.CREATE, EventType.MODIFY, EventType.DELETE})
         self._efforts_root.mkdir(parents=True, exist_ok=True)
@@ -151,9 +139,6 @@ class EffortParser:
             WatchCriterion(target=self._backlog_root, events=events),
             self._on_root_event,
         )
-
-    def _parent_file(self, effort: Effort) -> Path:
-        return self.vault_root / effort.path
 
     def _elements_for_file(self, folder: Path) -> List[Effort]:
         try:
@@ -190,11 +175,11 @@ class EffortParser:
         if event == EventType.DELETE:
             elements = self._elements_for_file(file)
             for effort in elements:
-                self._db.delete(effort, origin=handle)
+                self._db.delete(effort)
             self._effort_handles.pop(file, None)
             return
         for effort in self.parse(file):
-            self._db.update(effort, origin=handle)
+            self._db.update(effort)
             if self._task_parser is not None:
                 taskfile = file / "01 TASKS.md"
                 if taskfile.is_file():
@@ -254,7 +239,7 @@ class EffortParser:
 
     def update(self, effort: Effort, op: Update) -> None:
         if isinstance(op, CreateEffort):
-            self._db.update(effort, origin=active_origin())
+            self._db.update(effort)
             return
         if isinstance(op, MoveEffort):
             new_path = self._target_path(effort.name, op.target).relative_to(
@@ -266,78 +251,14 @@ class EffortParser:
                 else EffortStatus.ACTIVE
             )
             if op.target == "archive":
-                self._db.delete(effort, origin=active_origin())
+                self._db.delete(effort)
             else:
-                self._db.update(effort, origin=active_origin())
+                self._db.update(effort)
             return
         raise TypeError(f"Unknown Update: {op!r}")
-
-    # ---- write (DB → file projection) ----
-
-    def write(self, file: Path, elements: List[Effort]) -> None:
-        if not elements:
-            if file.is_dir():
-                shutil.rmtree(file)
-            return
-        if len(elements) > 1:
-            raise ValueError(
-                f"Multiple efforts projected to one folder: {file}",
-            )
-        [effort] = elements
-        target = self.vault_root / effort.path
-        if file != target:
-            log.warning("write target %s != effort path %s", file, target)
-        if not _is_effort_folder(target):
-            self._scaffold(target)
-            return
-        # Already a complete effort folder at the right location — nothing to do.
 
     def _target_path(self, name: str, target: str) -> Path:
         if target == "backlog":
             return self._backlog_root / name
         return self._efforts_root / name
-
-    def _scaffold(self, target: Path) -> None:
-        backlog_alt = self._backlog_root / target.name
-        active_alt = self._efforts_root / target.name
-        existing: Optional[Path] = None
-        if _is_effort_folder(active_alt) and active_alt != target:
-            existing = active_alt
-        elif _is_effort_folder(backlog_alt) and backlog_alt != target:
-            existing = backlog_alt
-        if existing is not None:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(existing), str(target))
-            return
-
-        ideas_placeholder = self._efforts_root / IDEAS_DIR / target.name
-        nested_dest = target / target.name
-
-        if target.exists() and not _is_effort_folder(target):
-            entries = [e for e in target.iterdir() if e != nested_dest]
-            if entries:
-                nested_dest.mkdir(parents=True, exist_ok=True)
-                for entry in entries:
-                    shutil.move(str(entry), str(nested_dest / entry.name))
-        elif ideas_placeholder.exists():
-            target.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(ideas_placeholder), str(nested_dest))
-        else:
-            target.mkdir(parents=True, exist_ok=True)
-
-        template_base = "newnotes/efforts"
-        templates = [
-            ("claude", "CLAUDE"),
-            ("readme", "00 README"),
-            ("taskfile", "01 TASKS"),
-        ]
-        for template, filename in templates:
-            rel = (target / filename).relative_to(self.vault_root).as_posix()
-            res = obsidian_cli(
-                "create", f"template={template_base}/{template}", f"path={rel}",
-            )
-            if res.returncode != 0:
-                raise RuntimeError(
-                    f"obsidian_cli create failed for {rel}: {res.stderr.strip()}"
-                )
 
