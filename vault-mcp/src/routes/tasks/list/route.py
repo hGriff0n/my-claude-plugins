@@ -1,5 +1,6 @@
 """GET /tasks — list tasks with optional filters."""
 
+from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -22,24 +23,45 @@ class ListTasksResponse(BaseModel):
     response_model=ListTasksResponse,
 )
 def task_list(
-    effort: Optional[str] = Query(None),
-    status: Optional[TaskStatus] = Query(None),
+    effort: Optional[list[str]] = Query(None),
+    status: Optional[list[TaskStatus]] = Query(None),
     type: Optional[TaskType] = Query(None),
-    tag: Optional[str] = Query(None),
+    tag: Optional[list[str]] = Query(None),
+    due_before: Optional[date] = Query(None),
+    scheduled_before: Optional[date] = Query(None),
     page_size: Optional[int] = Query(None),
     page_token: Optional[str] = Query(None),
     app: App = Depends(get_app),
 ) -> ListTasksResponse:
-    tasks = app.db.query('SELECT * FROM "task"')
-    if effort is not None:
-        tasks = [t for t in tasks if t.effort == effort]
-    if status is not None:
-        tasks = [t for t in tasks if t.status == status]
+    conditions: list[str] = []
+    params: list = []
+    if effort:
+        conditions.append(f'"effort" IN ({", ".join("?" * len(effort))})')
+        params.extend(effort)
+    if status:
+        conditions.append(f'"status" IN ({", ".join("?" * len(status))})')
+        params.extend(s.value for s in status)
     if type is not None:
-        tasks = [t for t in tasks if t.type == type]
-    if tag is not None:
-        tasks = [
-            t for t in tasks
-            if any(entry == tag or entry.split(":", 1)[0] == tag for entry in t.tags)
-        ]
+        conditions.append('"type" = ?')
+        params.append(type.value)
+    if due_before is not None:
+        conditions.append('"time_details.due" <= ?')
+        params.append(due_before.isoformat())
+    if scheduled_before is not None:
+        conditions.append('"time_details.scheduled" <= ?')
+        params.append(scheduled_before.isoformat())
+    if tag:
+        tag_clauses = []
+        for t in tag:
+            tag_clauses.append(
+                'EXISTS (SELECT 1 FROM json_each("task"."tags") '
+                'WHERE value = ? OR value LIKE ?)'
+            )
+            params.extend([t, f"{t}:%"])
+        conditions.append("(" + " OR ".join(tag_clauses) + ")")
+
+    sql = 'SELECT * FROM "task"'
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
+    tasks = app.db.query(sql, tuple(params))
     return ListTasksResponse(tasks=tasks, next_page_token=None)

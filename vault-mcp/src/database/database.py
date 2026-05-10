@@ -69,14 +69,14 @@ class Database:
             self._model_to_system[model] = system
         return ref
 
-    def query(self, sql: str) -> List[Any]:
+    def query(self, sql: str, params: Optional[Tuple[Any, ...]] = None) -> List[Any]:
         """Run raw SQL; deserialize rows into the registered model.
 
         Type is inferred from the SQL's `FROM <table>` clause; JOINs and CTEs
         are out of scope for this signature.
         """
         ref = self._table_from_sql(sql)
-        rows = self._conn.execute(sql).fetchall()
+        rows = self._conn.execute(sql, params or ()).fetchall()
         return [_row_to_model(dict(r), ref.model) for r in rows]
 
     def update(self, elem: BaseModel, origin: Any = None) -> None:
