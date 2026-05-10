@@ -1134,3 +1134,177 @@ class TestWriteDebouncerWal:
         debouncer.flush()
         # Writer raised → WAL entry must survive for the next attempt.
         assert wal.read_text(encoding="utf-8").strip() != ""
+
+
+# ---------------------------------------------------------------------------
+# DB-first vs file-origin write classification
+# ---------------------------------------------------------------------------
+
+
+class TestOriginScopedWal:
+    def test_file_origin_write_does_not_record_to_wal(self, tmp_path):
+        """Writes carrying a watcher handle are file-authoritative; the WAL
+        must stay empty so we don't replay state already on disk."""
+        from database import Database
+        from vault.debounce import WriteDebouncer
+        from vault.watcher import Watcher, WatcherHandle, EventType
+
+        db = Database()
+        db.register(Task, system="tasks")
+        watcher = Watcher()
+        wal = tmp_path / ".wal"
+        debouncer = WriteDebouncer(watcher=watcher, wal_path=wal)
+        debouncer.register_system(
+            name="tasks",
+            lag=__import__("datetime").timedelta(milliseconds=500),
+            parent_file_resolver=lambda t: tmp_path / "01 TASKS.md",
+            writer=lambda f, els: None,
+            elements_for_file=lambda f: [],
+            models={Task.__name__: Task},
+        )
+        db.attach_debouncer(debouncer)
+
+        handle = WatcherHandle(
+            id=1,
+            target=tmp_path / "01 TASKS.md",
+            events=frozenset({EventType.MODIFY}),
+            callback=lambda *a, **k: None,
+        )
+        db.update(_placeholder_task(id="fo0001"), origin=handle)
+
+        assert not wal.exists() or wal.read_text(encoding="utf-8") == ""
+
+    def test_db_first_write_records_to_wal(self, tmp_path):
+        """origin=None still funnels through _after_write into the WAL."""
+        from database import Database
+        from vault.debounce import WriteDebouncer
+        from vault.watcher import Watcher
+
+        db = Database()
+        db.register(Task, system="tasks")
+        watcher = Watcher()
+        wal = tmp_path / ".wal"
+        debouncer = WriteDebouncer(watcher=watcher, wal_path=wal)
+        debouncer.register_system(
+            name="tasks",
+            lag=__import__("datetime").timedelta(milliseconds=500),
+            parent_file_resolver=lambda t: tmp_path / "01 TASKS.md",
+            writer=lambda f, els: None,
+            elements_for_file=lambda f: [],
+            models={Task.__name__: Task},
+        )
+        db.attach_debouncer(debouncer)
+
+        db.update(_placeholder_task(id="db0001"), origin=None)
+        lines = wal.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 1
+        import json as _json
+        assert _json.loads(lines[0])["identity"] == "db0001"
+
+
+class TestAutoIdWalRecording:
+    def test_auto_id_during_file_event_records_to_wal(self, tmp_path):
+        """Parsing an id-less task during a file event generates an id and
+        DB-stores it before disk catches up. The WAL must capture that
+        DB-first state so a crash before backport doesn't lose the id."""
+        root = _vault(tmp_path)
+        # Pre-populate the taskfile so the watcher fires a CREATE event the
+        # moment register_taskfile runs (synchronous initial dispatch).
+        _write_root_taskfile(root, "- [ ] Brand new task without an id\n")
+        parser = _stack(root)
+        wal = root / ".wal"
+        # Register fired _on_taskfile_event during initialize → auto-id +
+        # explicit wal_record path should have run.
+        assert wal.exists()
+        lines = wal.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 1
+        import json as _json
+        rec = _json.loads(lines[0])
+        assert rec["model"] == "Task"
+        assert rec["payload"]["text"].startswith("Brand new task")
+        assert rec["identity"]  # auto-generated id is non-empty
+
+    def test_existing_id_does_not_record_to_wal(self, tmp_path):
+        """Tasks that already carry an id on disk are file-authoritative;
+        no WAL entry should appear during the initial parse."""
+        root = _vault(tmp_path)
+        _write_root_taskfile(root, "- [ ] Has id 🆔 ex0001\n")
+        _stack(root)
+        wal = root / ".wal"
+        assert not wal.exists() or wal.read_text(encoding="utf-8") == ""
+
+
+class TestPruneDanglingRefs:
+    def test_prune_enqueues_backport_for_modified_tasks(self, tmp_path):
+        """Pruning a dangling reference is DB-first: the cleaned dependency
+        state isn't in the file. The fix must enqueue a backport so the
+        change actually reaches disk."""
+        from vault.watcher import EventType, WatcherHandle
+        root = _vault(tmp_path)
+        # No taskfile yet → register fires no initial events, leaving the
+        # DB pristine for us to seed manually.
+        parser = _stack(root)
+        fake_handle = WatcherHandle(
+            id=99,
+            target=root / ROOT_TASKFILE,
+            events=frozenset({EventType.MODIFY}),
+            callback=lambda *a, **k: None,
+        )
+        holder = _placeholder_task(
+            id="pr0001",
+            deps=Dependencies(
+                blocked=["ghost001"], parent="", children=[],
+            ),
+        )
+        # File-origin update so seed state doesn't hit the WAL.
+        parser._db.update(holder, origin=fake_handle)
+        wal = root / ".wal"
+        assert not wal.exists() or wal.read_text(encoding="utf-8") == ""
+
+        parser.prune_dangling_refs()
+
+        # Prune saw ghost001 wasn't in the table → cleaned blocked=[] and
+        # wrote with origin=None, which records to WAL + enqueues backport.
+        assert wal.exists()
+        lines = wal.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 1
+        import json as _json
+        rec = _json.loads(lines[0])
+        assert rec["identity"] == "pr0001"
+        assert rec["payload"]["dependencies"]["blocked"] == []
+
+    def test_prune_no_op_does_not_enqueue(self, tmp_path):
+        """When every reference resolves, prune mutates nothing and writes
+        no WAL entries."""
+        root = _vault(tmp_path)
+        _write_root_taskfile(
+            root,
+            "- [ ] A 🆔 ok0001\n- [ ] B 🆔 ok0002 #blocked:ok0001\n",
+        )
+        parser = _stack(root)
+        wal = root / ".wal"
+        if wal.exists():
+            wal.unlink()
+        parser.prune_dangling_refs()
+        assert not wal.exists() or wal.read_text(encoding="utf-8") == ""
+
+
+class TestPersistentDatabase:
+    def test_state_survives_reopen(self, tmp_path):
+        """Database opened against a path persists rows across instances —
+        this is the snapshot mechanism replacing the WAL's recovery role."""
+        from database import Database
+
+        db_path = tmp_path / "vault.db"
+        db1 = Database(path=str(db_path))
+        db1.register(Task, system="tasks")
+        task = _placeholder_task(id="ps0001", text="Persisted")
+        db1.update(task, origin=None)
+
+        # Re-open to simulate a process restart.
+        db2 = Database(path=str(db_path))
+        db2.register(Task, system="tasks")
+        rows = db2.query('SELECT * FROM "task"')
+        assert len(rows) == 1
+        assert rows[0].id == "ps0001"
+        assert rows[0].text == "Persisted"

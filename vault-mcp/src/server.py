@@ -58,6 +58,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 WAL_PATH = _log_dir / "pending_writes.jsonl"
+DB_PATH = _log_dir / "vault-mcp.db"
 
 
 _state: dict = {"parsers_initialized": False}
@@ -142,7 +143,7 @@ def main() -> None:
     )
 
     # Step 3: database, watcher, debouncer
-    db = Database()
+    db = Database(path=str(DB_PATH))
     watcher = Watcher()
     debouncer = WriteDebouncer(watcher=watcher, wal_path=WAL_PATH)
     db.attach_debouncer(debouncer)

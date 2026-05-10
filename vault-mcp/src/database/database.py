@@ -126,7 +126,10 @@ class Database:
     def _after_write(
         self, elem: BaseModel, *, origin: Any, deleted: bool,
     ) -> None:
-        if self._debouncer is None:
+        # File-origin writes (origin is a watcher handle) are already on
+        # disk — no WAL, no backport. Only DB-first writes (origin=None)
+        # need the debouncer.
+        if origin is not None or self._debouncer is None:
             return
         system = self._model_to_system.get(type(elem))
         if system is None:
@@ -137,8 +140,7 @@ class Database:
         self._debouncer.wal_record(
             system=system, elem=elem, deleted=deleted, file=parent,
         )
-        if origin is None:
-            self._debouncer.enqueue(parent, system)
+        self._debouncer.enqueue(parent, system)
 
     def tables(self, system: str) -> List[TableRef]:
         """Return the tables a given system has registered."""

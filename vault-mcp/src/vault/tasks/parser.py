@@ -115,6 +115,9 @@ class TaskParser:
         self._watcher: Any = None
         self._debouncer: Any = None
         self._taskfile_handles: Dict[Path, WatcherHandle] = {}
+        # IDs auto-assigned during the most recent parse() call. Read by
+        # _on_taskfile_event so DB-first ID state can be WAL-recorded.
+        self._last_auto_ids: Set[str] = set()
 
     # ---- initialize ----
 
@@ -184,17 +187,31 @@ class TaskParser:
             for task in self._elements_for_file(file):
                 self._db.delete(task, origin=handle)
         elif file.is_file():
-            for task in self.parse(file):
+            tasks = self.parse(file)
+            auto_ids = self._last_auto_ids
+            for task in tasks:
                 self._db.update(task, origin=handle)
-        self.prune_dangling_refs(origin=handle)
+                if task.id in auto_ids and self._debouncer is not None:
+                    # Auto-assigned ID is DB-first state; the file event
+                    # carried no ID for this task. Record to WAL so a crash
+                    # before backport doesn't lose the ID-to-text mapping.
+                    self._debouncer.wal_record(
+                        system=SYSTEM_NAME,
+                        elem=task,
+                        deleted=False,
+                        file=file,
+                    )
+        self.prune_dangling_refs()
 
-    def prune_dangling_refs(self, *, origin: Any = None) -> None:
+    def prune_dangling_refs(self) -> None:
         """Drop blocked / parent / child references to ids no longer in the table.
 
         Runs after every parse cycle (initial seed and watcher-driven
         re-parses) so the index converges to a state where every reference
-        resolves to a live task. The corresponding `blocked` tag is
-        rewritten on disk via the standard write path.
+        resolves to a live task. Pruning is always DB-first: the new
+        dependency state isn't in the file, so each modified task is
+        written with origin=None so `_after_write` records it to the WAL
+        and enqueues a backport.
         """
         tasks = self._db.query('SELECT * FROM "task"')
         valid_ids = {t.id for t in tasks}
@@ -214,7 +231,7 @@ class TaskParser:
             )
             if task.status == TaskStatus.BLOCKED and not new_blocked:
                 task.status = TaskStatus.OPEN
-            self._db.update(task, origin=origin)
+            self._db.update(task, origin=None)
 
     def parse(self, file: Path) -> List[Task]:
         file = Path(file)
@@ -229,6 +246,9 @@ class TaskParser:
 
         pending = self._pending_tasks_for(file)
         records, wrote_back = self._collect_records(lines, body_start, pending)
+        self._last_auto_ids = {
+            r.tags["id"] for r in records if r.auto_id_assigned
+        }
         if wrote_back and self._debouncer is not None:
             # Auto-assigned IDs reach disk via the debouncer's normal backport
             # rather than an inline write, so a concurrent edit in Obsidian
@@ -366,6 +386,7 @@ class TaskParser:
                 ms = _MILESTONE_HEADING_RE.match(stripped)
                 if ms:
                     title, tags, dataview_tags = _split_tags(ms.group(1))
+                    auto_id = False
                     if not tags.get("id"):
                         adopted = _adopt_pending_id(title, candidates)
                         if adopted is not None:
@@ -376,6 +397,7 @@ class TaskParser:
                                 title, tags, dataview_tags,
                             )
                             wrote_back = True
+                            auto_id = True
                     rec = _Record(
                         indent=-1,
                         checkbox="",
@@ -385,6 +407,7 @@ class TaskParser:
                         section=section,
                         parent=None,
                         type=TaskType.MILESTONE,
+                        auto_id_assigned=auto_id,
                     )
                     records.append(rec)
                     current_milestone = rec
@@ -405,6 +428,7 @@ class TaskParser:
             checkbox = m.group(2)
             title, tags, dataview_tags = _split_tags(m.group(3))
 
+            auto_id = False
             if not tags.get("id"):
                 adopted = _adopt_pending_id(title, candidates)
                 if adopted is not None:
@@ -413,6 +437,7 @@ class TaskParser:
                     tags["id"] = generate_task_id()
                     lines[i] = _build_line(indent, checkbox, title, tags, dataview_tags)
                     wrote_back = True
+                    auto_id = True
 
             while stack and stack[-1].indent >= indent:
                 stack.pop()
@@ -433,6 +458,7 @@ class TaskParser:
                 section=section,
                 parent=parent,
                 type=TaskType.MILESTONE if is_milestone_tag else TaskType.TASK,
+                auto_id_assigned=auto_id,
             )
             records.append(rec)
             stack.append(rec)
@@ -624,6 +650,7 @@ class _Record:
     section: str
     parent: Optional["_Record"]
     type: TaskType = TaskType.TASK
+    auto_id_assigned: bool = False
 
 
 def _adopt_pending_id(title: str, candidates: List[Task]) -> Optional[str]:
