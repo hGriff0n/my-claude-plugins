@@ -99,6 +99,24 @@ def test_filter_by_type(tmp_path):
     assert tasks[0]["id"] == "mil001"
 
 
+def test_due_or_scheduled_before_is_or(tmp_path):
+    vault = make_vault(tmp_path)
+    _seed(
+        vault,
+        root_content=(
+            "- [ ] Due only 🆔 td0001 📅 2026-01-10\n"
+            "- [ ] Scheduled only 🆔 td0002 ⏳ 2026-01-10\n"
+            "- [ ] Neither 🆔 td0003\n"
+        ),
+    )
+    client, _ = make_client(vault, router)
+
+    resp = client.get("/tasks?due_before=2026-01-15&scheduled_before=2026-01-15")
+    assert resp.status_code == 200
+    ids = {t["id"] for t in resp.json()["tasks"]}
+    assert ids == {"td0001", "td0002"}
+
+
 def test_empty_list(tmp_path):
     vault = make_vault(tmp_path)
     client, _ = make_client(vault, router)

@@ -44,10 +44,16 @@ def task_list(
     if type is not None:
         conditions.append('"type" = ?')
         params.append(type.value)
-    if due_before is not None:
+    if due_before is not None and scheduled_before is not None:
+        conditions.append(
+            '("time_details.due" <= ? OR "time_details.scheduled" <= ?)'
+        )
+        params.append(due_before.isoformat())
+        params.append(scheduled_before.isoformat())
+    elif due_before is not None:
         conditions.append('"time_details.due" <= ?')
         params.append(due_before.isoformat())
-    if scheduled_before is not None:
+    elif scheduled_before is not None:
         conditions.append('"time_details.scheduled" <= ?')
         params.append(scheduled_before.isoformat())
     if tag:
