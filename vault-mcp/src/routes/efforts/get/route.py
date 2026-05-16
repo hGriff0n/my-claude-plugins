@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 from routes.deps import App, get_app
 from schemas.efforts import Effort
-from schemas.tasks import TaskStatus
+from schemas.tasks import TaskStatus, TaskType
 
 router = APIRouter()
 
@@ -33,7 +33,7 @@ def effort_get(name: str, app: App = Depends(get_app)) -> Effort:
     except ValueError:
         tasks = []
     for t in tasks:
-        if t.effort == name:
+        if t.effort == name and t.type != TaskType.TASKFILE:
             counts[t.status.value] = counts.get(t.status.value, 0) + 1
 
     effort.display.task_stats.num_by_status = counts

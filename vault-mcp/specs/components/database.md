@@ -18,10 +18,7 @@ The database exposes a small generic interface — no specialized per-system que
 - **`update(elem: T, origin: WatcherHandle | None) -> None`**
   - Upserts `elem` keyed by the existing identity of `elem`. Replaces the row.
   - `origin` identifies the watcher whose callback is currently driving this write, or `None` for DB-first edits originating outside a watcher (route handlers, scripts, parser-internal logic).
-  - After the upsert, the database consults the write debouncer (see `components/asyncfile.md`):
-    - `origin is None` → resolve `elem`'s parent file via the owning system's `parent_file_resolver` (registered with the debouncer at `parser.initialize` time) and `debouncer.enqueue(parent_file, lag)` with that system's configured lag.
-    - `origin is not None` → skip enqueueing; the file is already authoritative for this change.
-  - Callers that are inside a watcher callback are responsible for passing the active `WatcherHandle` through to `update`. The active origin is exposed by the watcher dispatch layer; the database does not infer it from call-stack state.
+  - The database does not itself dispatch any file write. Marking the owning file dirty (so the watcher's flush channel eventually projects the change to disk) is the responsibility of the parser's `update(elem, op)` method, which calls `watcher.mark_dirty(file)` when `origin is None`. The `origin` parameter on `database.update` exists so future cross-cutting concerns can distinguish file-driven writes from API-driven ones without re-deriving the call context.
 
 ## Field flattening
 
@@ -29,13 +26,13 @@ When `register` is called, nested pydantic structs are flattened into dotted col
 
 ## Initialization
 
-At server startup, table registration happens in a single pass across **all** systems before any parser is initialized — for every system, the server imports the generated `src/schemas/<name>.py` and calls `register(...)` for each type listed under that system's readme `tables: [...]`. Only once every system's tables exist does the server begin invoking `parser.initialize(db, watcher, debouncer)` per system; this ordering matters because a parser's initialize-time watcher firings may issue cross-system queries that depend on other systems' tables already being present.
+At server startup, table registration happens in a single pass across **all** systems before any parser is initialized — for every system, the server imports the generated `src/schemas/<name>.py` and calls `register(...)` for each type listed under that system's readme `tables: [...]`. Only once every system's tables exist does the server begin invoking `parser.initialize(db, watcher)` per system; this ordering matters because a parser's initialize-time watcher firings may issue cross-system queries that depend on other systems' tables already being present.
 
 Seeding falls out of `parser.initialize`: the watchers it registers fire immediately on existing files and populate the database via `parse(...)` → `update(...)` (see `arch/parser.md` and `components/asyncfile.md`). After startup, live watcher events drive subsequent `update(...)` calls.
 
 ## Cross-system access
 
-Any registered table is queryable by any caller. Cross-system reads are simply queries against another table; there is no special channel. Cross-system *writes* go through the owning system's documented write operations (its parser `write` and the routes that wrap it) — do not `update(...)` another system's table directly outside that system's code.
+Any registered table is queryable by any caller. Cross-system reads are simply queries against another table; there is no special channel. Cross-system *writes* go through the owning system's documented write operations (its parser `update` and the routes that wrap it) — do not `update(...)` another system's table directly outside that system's code.
 
 This implies that there is an interface to get the tables for a given system
 

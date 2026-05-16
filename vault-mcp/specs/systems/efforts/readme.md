@@ -154,5 +154,5 @@ Allowed transitions:
 #### Behavior
 
 1. Query the efforts table for `name`; 404 if missing.
-2. Invoke the parser's `move` write with the target state. The parser handles file moves and registers the change with `vault/debounce`.
+2. Invoke the parser's `move` update with the target state. The parser flushes any dirty taskfiles under the old path, performs the folder move, and retargets the watchers via `watcher.retarget(handle, new_path)` for the effort handle and each task-file handle under it (no re-parse cascade).
 3. On archive, the post-watcher re-parse removes the row; respond with `{ effort: null, archived: true }`. Otherwise respond with the refreshed `Effort`.

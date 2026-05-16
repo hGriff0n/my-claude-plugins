@@ -22,9 +22,14 @@ A taskfile is the unit of scan; individual tasks are extracted by `parse`.
 
 ### Parse
 
-`parse(file)` reads a taskfile and returns a `list[Task]`. Per file:
+`parse(file)` reads a taskfile and returns a `list[Task]` consisting of:
 
-- Optionally consume a leading YAML frontmatter block (`---` … `---`) and preserve it verbatim for write-back.
+- One `TASKFILE`-typed task per file. This row is persistent (not ephemeral as in earlier drafts). Its `notes` field carries the file's YAML frontmatter, one `Note(indent=0, text="<key>: <value>")` per top-level frontmatter property. Its `text` is the file path relative to the vault root. `file_order` is `0` (the TASKFILE always sorts before any task in its file). A taskfile must not contain top-level prose; the only non-task content the parser preserves is the frontmatter (via the TASKFILE row), section headings (via each task's `section`), and milestone headings (as MILESTONE-typed tasks).
+- One `Task` row per parsed task line or milestone heading.
+
+Per file:
+
+- Consume the leading YAML frontmatter block (`---` … `---`) if present and emit the TASKFILE row from it.
 - Walk the body in a single pass, tracking the current heading section. Headings delimit sections and are preserved on each task for write-back, but they do **not** encode `status`.
 - For each line matching the Obsidian task pattern (`- [ ] …`, `- [x] …`, `- [/] …`, `- [-] …`) — `- [[…]]` wiki-link lines are excluded:
   - The line's content (everything after `- [x] `) is split into a `title` and a trailing metadata tail. The split point is the first occurrence of any of:
@@ -35,7 +40,8 @@ A taskfile is the unit of scan; individual tasks are extracted by `parse`.
     - **Emoji**: known emoji → next whitespace token is the value (`📅 2026-02-15` → `due=2026-02-15`). Unknown emoji greedily consume tokens until the next metadata token.
     - **Hashtag**: `#name` → flag tag with empty value; `#name:value` → tag with value.
     - **Dataview**: `[name::value]` or `(name::value)` → tag with value, name added to `dataview_tags`. Tags `estimate`, `actual`, `effort` are always re-rendered as dataview on write regardless of original syntax.
-  - `id` ← `tags["id"]` if present (any of the three syntaxes); if absent, the parser consults pending writes for this file before generating a new id (see *Pending-write reconciliation* below). If no match, an id is generated and written back via `update_id`.
+  - `id` ← `tags["id"]` if present (any of the three syntaxes); if absent, an id is generated, set on the task, and the file is marked dirty so the next FLUSH writes the id back to disk.
+  - `file_order` ← the 0-based line index of the task line in the source file at the time of this parse. This is the field the writer sorts by to preserve original ordering. Tasks created via the API but not yet on disk carry `file_order = -1`; the writer slots them in after their parent's existing child block (or at end-of-section for parentless tasks). Re-parse refreshes `file_order` on every task whose line is still recognisable.
   - `type` ← `MILESTONE` if the line is an L4 heading (`#### …`), or — for back-compat — if the task is under a milestones heading or carries a `milestone` tag; else `TASK`.
 
   In addition to `- [ ]` task lines, the parser also recognises:
@@ -45,7 +51,7 @@ A taskfile is the unit of scan; individual tasks are extracted by `parse`.
   - `status` ← from the checkbox glyph alone: `[ ]` → `OPEN`, `[x]` → `CLOSED`, `[/]` → `IN_PROGRESS`, `[-]` → cancelled. `BLOCKED` is derived at the API mapping layer when a `blocked` tag with a non-empty value is present.
   - `text` ← the title portion (task line with checkbox prefix and metadata tail stripped).
   - `effort` ← derived from the file path: the effort folder name, or `"none"` for the root taskfile.
-  - `notes` ← contiguous indented bullet lines following the task line whose indent exceeds the task's indent. Stored with their relative indent so nested note structure round-trips.
+  - `notes` ← contiguous indented bullet lines following the task line whose indent exceeds the task's indent. Each note is stored as `Note(indent, text)` where `indent` is the number of indent levels *relative to the parent task's indent* (so a note one level deeper than its task has `indent=1`, a sub-note one level deeper still has `indent=2`, etc.). This preserves nested note structure on round-trip. On write, notes emit at `task_indent_level + note.indent`.
   - `dependencies.parent` ← the id of the enclosing task when this task is a more-deeply-indented `- [ ]` line under another task; `dependencies.children` is filled in a second pass after all tasks are collected.
   - `dependencies.blocked` ← parsed from the `blocked` tag (canonical glyph `⛔`, also accepted as `#blocked:<id>` or `[blocked::<id>]`). Multiple blockers are encoded as a comma-separated value. After all taskfiles have been indexed (initial scan and on every subsequent re-parse triggered by the watcher), an integrity pass prunes any `blocked` entry that references an id no longer present in the tasks table; the corresponding `blocked` tag is rewritten on disk via `update_dependencies`. The same pass is what reconciles parent/child links after a task disappears — a now-orphaned `dependencies.parent` reference is dropped, and the missing id is removed from any other task's `dependencies.children`.
   - `time_details` ← `created` / `due` / `scheduled` / `completed` from the corresponding emoji/dataview/hashtag entries when present.
@@ -54,32 +60,33 @@ A taskfile is the unit of scan; individual tasks are extracted by `parse`.
 
 The parser's `Update` type enumerates:
 
-- `create` — append a new task line to the appropriate taskfile. Generates an `id` tag and renders the task in canonical form via `utils/formatting.render_tags`.
-- `update_status` — change a task's status by rewriting the checkbox glyph in place.
-- `update_text` — rewrite the task title portion of the line, preserving the trailing tag block.
-- `update_dependencies` — rewrite the `blocked` tag (and any parent-nesting indent) for the task. There are no separate `blocks:` / `blocked-by:` markers — outgoing-blocker information is reconstructed by the indexer from the `blocked` values of other tasks.
-- `update_metadata` — update individual tag entries (`due`, `scheduled`, `created`, `completed`, arbitrary `#tag` / dataview entries). All tags are re-rendered through the canonical formatter so the on-disk syntax converges to the canonical form for known tags.
-- `archive` — move a `CLOSED` task out of its source taskfile and append it to the daily note for its `completed` date. The task drops from the index after the next re-parse.
-- `update_id` — internal write used by `parse` to backfill a missing `id` tag; not exposed externally.
+- `create` — register a new task with the database. The task arrives with `file_order = -1`; the next FLUSH inserts its rendered line into the source file after the parent's existing child block (or at end-of-section for parentless tasks).
+- `update_status` — change a task's status. On FLUSH the checkbox glyph is rewritten in place.
+- `update_text` — change a task's title.
+- `update_dependencies` — change a task's blocked / parent / children references. The `blocked` tag is re-rendered on FLUSH; parent/children are derived from indent on parse and emitted via indent on write.
+- `update_metadata` — change individual tag entries (`due`, `scheduled`, `created`, `completed`, arbitrary `#tag` / dataview entries). All tags re-render through the canonical formatter so on-disk syntax converges.
+- `archive` — move a `CLOSED` task out of its source taskfile and append it to the daily note for its `completed` date.
 
-All writes are direct file I/O batched through `vault/debounce.py` (see `arch/parser.md`).
+Each `update` mutates the database and calls `watcher.mark_dirty(taskfile)` for the owning file. No file I/O happens at `update` time. The actual write is performed by the parser's flush callback when the watcher dispatches `EventType.FLUSH` for a dirty taskfile that has been quiet for the configured inactivity window (see `arch/parser.md` and `components/asyncfile.md`).
 
-### Pending-write reconciliation
+### Flush algorithm
 
-When `parse` encounters a task line with no `id` tag, the file may already have outstanding pending writes for that task — for example: the user typed the task without an id, the parser previously assigned one and enqueued a backport, the user kept editing before the projection landed, and the watcher is firing again on the still-id-less line.
+When the watcher dispatches FLUSH for a dirty taskfile, the parser performs a **read–merge–write** rather than a pure projection:
 
-Before generating a new id, the parser queries the debouncer:
+1. **Read & re-parse** the current file content into a fresh `list[Task]` (including the TASKFILE row). This is the source of truth for any user edits made during the inactivity window.
+2. **Field-level merge** against the database state, per task id:
+   - For fields the parser API has explicitly modified since the last successful flush (tracked by a transient per-task dirty-field set inside the parser), the DB value wins.
+   - For all other fields the parsed (on-disk) value wins. This protects user edits in Obsidian that happened during the inactivity window.
+   - Tasks present in the DB but not in the re-parse are treated as deletions only if the DB carried no pending changes for them; otherwise they are re-inserted (the user likely removed a line we still need to write).
+   - Tasks present in the re-parse but absent from the DB are folded back into the DB at their parsed `file_order`.
+3. **Render** the merged task list:
+   - Emit the TASKFILE row's frontmatter as `---` … `---`.
+   - Sort the merged tasks by `file_order`. Tasks with `file_order == -1` are slotted in after the last existing child of their `dependencies.parent` (or, for parentless tasks, at the end of their `section`).
+   - For each task, emit the task line (or `#### …` heading for MILESTONE-typed tasks), followed by each note at `task_indent_level + note.indent`.
+   - Section headings are re-emitted whenever `section` changes between two adjacent emitted tasks.
+4. **Write** the resulting file and call `watcher.mark_self_write(file)` so the resulting MODIFY event is suppressed. Clear the per-task dirty-field sets on success. A raised exception leaves the dirty marker in place so the next FLUSH retries.
 
-1. Call `debouncer.pending_elements(file)` to get the list of pending `Task` payloads for this file.
-2. **Match rule** — task text prefix. A pending task matches the parsed line iff the pending task's `text` is a prefix of the parsed line's title (i.e. the parsed title starts with the pending text at position 0). The parsed title is the portion that becomes `text` after stripping the checkbox prefix and metadata tail. This allows the user to extend a task's text in Obsidian during the lag window and still reconcile against the pending write. Tags, indent, and surrounding heading are not part of the key.
-3. **Resolution**:
-   - **Exactly one match** → adopt the pending task's `id` rather than generating a new one. No `update_id` write is issued (the pending backport will write the id to disk on its next eligible tick).
-   - **Zero matches** → generate a new id and `update_id` as today.
-   - **Multiple matches** (e.g. two pending tasks share the same text) → generate a new id and `update_id`. This is the duplicate-task case; the open question in `components/asyncfile.md` covers whether to upgrade this to a hard alert.
-
-The match runs per parsed line, independent of position in the file, so reordering tasks or inserting new lines above a pending task does not break reconciliation.
-
-Other task fields (status, tags, dependencies) are *not* part of the match key — the user may have edited them between the pending write and the current parse, and the parsed values win on the next `update`.
+After a successful flush, the integrity pass for dangling `blocked` / `parent` / `children` references runs and any reference rewrites set their tasks' files dirty for the next FLUSH.
 
 ## Routes
 
@@ -109,7 +116,7 @@ Create a new task in the root taskfile or under an effort.
 #### Behavior
 
 1. Resolve the target taskfile from `effort`. 400 if the effort is unknown.
-2. Invoke the parser's `create` write; the parser generates the id, writes the line, and registers the write with debounce.
+2. Invoke the parser's `create` update; the parser generates the id, inserts the new task into the database with `file_order = -1`, and marks the taskfile dirty so the next FLUSH writes the new line into the file after the parent's existing child block.
 3. After re-parse, return the newly inserted `Task`.
 
 ### GetTask

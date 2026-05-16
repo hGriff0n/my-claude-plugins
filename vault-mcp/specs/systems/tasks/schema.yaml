@@ -6,8 +6,23 @@ components:
   schemas:
     TaskType:
       type: string
-      description: Milestones are tasks internally but aren't stored as such in Obsidian. Taskfile is a server-only distinction that wraps all tasks in the same taskfile
+      description: |
+        Milestones are tasks internally but aren't stored as such in Obsidian (they render as L4 headings).
+        TASKFILE is a persisted per-file row whose `notes` carry the file's YAML frontmatter as `<key>: <value>` strings; one TASKFILE exists per taskfile and always sorts before any task in its file.
       enum: [MILESTONE, TASK, TASKFILE]
+
+    Note:
+      type: object
+      description: A note bullet attached to a task. `indent` is relative to the parent task's indent level (0 = directly under the task, 1 = one level deeper, etc.) so nested note structure round-trips.
+      required: [indent, text]
+      properties:
+        indent:
+          type: integer
+          minimum: 0
+          description: Indent level relative to the parent task.
+        text:
+          type: string
+          description: The bullet's text content with leading `- ` stripped.
 
     TaskStatus:
       type: string
@@ -34,8 +49,8 @@ components:
 
     Task:
       type: object
-      description: A single task.
-      required: [id, type, status, text, effort, notes, tags, dependencies, time_details]
+      description: A single task (or, when `type == TASKFILE`, a per-file row carrying frontmatter; when `type == MILESTONE`, an L4 heading rendered with task metadata).
+      required: [id, type, status, text, effort, file_order, notes, tags, dependencies, time_details]
       properties:
         id:
           type: string
@@ -46,10 +61,17 @@ components:
           $ref: "#/components/schemas/TaskStatus"
         text:
           type: string
-          description: The task title line.
+          description: The task title line. For TASKFILE rows, the vault-relative file path.
         effort:
           type: string
           description: Parent effort name, or 'none' if in the root taskfile.
+        file_order:
+          type: integer
+          default: -1
+          description: |
+            0-based line index of the task line in the source file at last parse. The writer sorts tasks by this value to preserve original ordering.
+            `-1` indicates the task has not yet been written to disk (e.g. just created via the API); the writer slots such tasks in after their parent's existing child block (or at end-of-section for parentless tasks).
+            TASKFILE rows carry `file_order = 0`.
         estimate:
           type: string
           default: ""
@@ -60,8 +82,10 @@ components:
           description: Recorded actual effort/duration; empty if unset.
         notes:
           type: array
-          description: Bullet points attaching additional info/investigation.
-          items: { type: string }
+          description: |
+            Bullet points attaching additional info/investigation. For TASKFILE rows, one Note per top-level YAML frontmatter entry encoded as `Note(indent=0, text="<key>: <value>")`.
+          items:
+            $ref: "#/components/schemas/Note"
         tags:
           type: array
           description: Tags/properties parsed from the taskline.

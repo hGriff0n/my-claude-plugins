@@ -9,6 +9,7 @@ system (`specs/systems/efforts/readme.md`). An effort is a folder under
 from __future__ import annotations
 
 import logging
+import shutil
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -235,30 +236,93 @@ class EffortParser:
             )
         ]
 
-    # ---- update (DB only) ----
+    # ---- update ----
 
     def update(self, effort: Effort, op: Update) -> None:
         if isinstance(op, CreateEffort):
             self._db.update(effort)
             return
         if isinstance(op, MoveEffort):
-            new_path = self._target_path(effort.name, op.target).relative_to(
-                self.vault_root,
+            old_folder = self.vault_root / effort.path
+            new_folder = self._target_path(effort.name, op.target)
+
+            # Flush any dirty taskfiles under the old folder so on-disk
+            # content reflects pending DB-side edits before we move.
+            if self._task_parser is not None:
+                for taskfile, _h in self._task_parser.taskfile_handles_under(old_folder):
+                    self._task_parser.flush_file(taskfile)
+
+            if op.target == "archive":
+                if old_folder.is_dir():
+                    shutil.rmtree(old_folder)
+                self._deregister_under(old_folder)
+                self._db.delete(effort)
+                return
+
+            if old_folder.resolve() != new_folder.resolve():
+                new_folder.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(old_folder), str(new_folder))
+                self._retarget_under(old_folder, new_folder)
+
+            effort.path = Path(
+                new_folder.relative_to(self.vault_root).as_posix(),
             )
-            effort.path = Path(new_path.as_posix())
             effort.status = (
                 EffortStatus.BACKLOG if op.target == "backlog"
                 else EffortStatus.ACTIVE
             )
-            if op.target == "archive":
-                self._db.delete(effort)
-            else:
-                self._db.update(effort)
+            self._db.update(effort)
             return
         raise TypeError(f"Unknown Update: {op!r}")
+
+    def _retarget_under(self, old_root: Path, new_root: Path) -> None:
+        for folder, handle in list(self._effort_handles.items()):
+            new_target = _rebase(folder, old_root, new_root)
+            if new_target is None:
+                continue
+            self._watcher.retarget(handle, new_target)
+            self._effort_handles.pop(folder, None)
+            self._effort_handles[new_target] = handle
+        if self._task_parser is not None:
+            for taskfile, handle in self._task_parser.taskfile_handles_under(old_root):
+                new_target = _rebase(taskfile, old_root, new_root)
+                if new_target is None:
+                    continue
+                self._watcher.retarget(handle, new_target)
+                self._task_parser._taskfile_handles.pop(taskfile, None)
+                self._task_parser._taskfile_handles[new_target] = handle
+
+    def _deregister_under(self, folder: Path) -> None:
+        try:
+            resolved = folder.resolve()
+        except OSError:
+            resolved = folder
+        for stored, handle in list(self._effort_handles.items()):
+            try:
+                stored.resolve().relative_to(resolved)
+            except (ValueError, OSError):
+                continue
+            self._watcher.deregister(handle)
+            self._effort_handles.pop(stored, None)
+        if self._task_parser is not None:
+            for taskfile, handle in self._task_parser.taskfile_handles_under(folder):
+                self._watcher.deregister(handle)
+                self._task_parser._taskfile_handles.pop(taskfile, None)
 
     def _target_path(self, name: str, target: str) -> Path:
         if target == "backlog":
             return self._backlog_root / name
         return self._efforts_root / name
+
+
+def _rebase(path: Path, old_root: Path, new_root: Path) -> Optional[Path]:
+    try:
+        old_resolved = old_root.resolve()
+        rel = path.resolve().relative_to(old_resolved)
+    except (ValueError, OSError):
+        try:
+            rel = path.relative_to(old_root)
+        except ValueError:
+            return None
+    return new_root / rel
 

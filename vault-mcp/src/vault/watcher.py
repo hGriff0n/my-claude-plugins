@@ -13,11 +13,13 @@ Implements the inbound half of `specs/components/asyncfile.md`:
   forward inotify events, so polling is the portable choice).
 - Events are coalesced per (handle, file) for a short window to absorb
   editor save-storms.
-- A self-write registry suppresses events whose paths the debouncer (or
-  parser write backends) just touched.
+- A self-write registry suppresses events whose paths parser write
+  backends just touched.
 - The currently firing handle is exposed as the *active origin* via a
   `ContextVar`; callers performing DB writes inside a callback pass it
-  through to the database so the debouncer can suppress backport.
+  through so the parser knows not to re-mark the file dirty.
+- Dirty files (`mark_dirty(target)`) receive an `EventType.FLUSH` callback
+  once they have been quiet for the configured inactivity window.
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ class EventType(Enum):
     CREATE = "create"
     MODIFY = "modify"
     DELETE = "delete"
+    FLUSH = "flush"
 
 
 @dataclass(frozen=True)
@@ -97,16 +100,20 @@ class Watcher:
         poll_interval: float = 1.0,
         coalesce_window: float = 5.0,
         self_write_window: float = 2.0,
+        flush_inactivity_window: float = 5.0,
     ) -> None:
         self._poll_interval = poll_interval
         self._coalesce_window = coalesce_window
         self._self_write_window = self_write_window
+        self._flush_inactivity_window = flush_inactivity_window
 
         self._lock = threading.RLock()
         self._handles: Dict[int, WatcherHandle] = {}
         self._state: Dict[int, _WatchState] = {}
         self._pending: Dict[Tuple[int, Path], _PendingEvent] = {}
         self._self_writes: Dict[Path, float] = {}
+        # path -> (marked_at_monotonic, last_external_modify_monotonic)
+        self._dirty: Dict[Path, Tuple[float, float]] = {}
         self._next_id = 1
 
         self._stop = threading.Event()
@@ -153,11 +160,21 @@ class Watcher:
 
     def deregister(self, handle: WatcherHandle) -> None:
         with self._lock:
-            self._handles.pop(handle.id, None)
+            stored = self._handles.pop(handle.id, None)
             self._state.pop(handle.id, None)
             for key in list(self._pending):
                 if key[0] == handle.id:
                     del self._pending[key]
+            if stored is not None:
+                self._dirty.pop(stored.target, None)
+
+    def mark_dirty(self, target: Path) -> None:
+        """Flag `target` as needing a FLUSH once it has been inactive."""
+        with self._lock:
+            now = time.monotonic()
+            prev = self._dirty.get(target)
+            last_ext = prev[1] if prev is not None else 0.0
+            self._dirty[target] = (now, last_ext)
 
     def retarget(self, handle: WatcherHandle, new_target: Path) -> None:
         """Move a watcher's target without changing handle identity."""
@@ -165,9 +182,13 @@ class Watcher:
             stored = self._handles.get(handle.id)
             if stored is None:
                 return
+            old_target = stored.target
             stored.target = new_target
             handle.target = new_target
             self._state[handle.id] = _WatchState()
+            entry = self._dirty.pop(old_target, None)
+            if entry is not None:
+                self._dirty[new_target] = entry
 
     def mark_self_write(self, path: Path) -> None:
         """Suppress the next file event for `path` (within the window)."""
@@ -251,6 +272,7 @@ class Watcher:
             try:
                 self._scan_once()
                 self._flush_pending()
+                self._dispatch_flushes()
             except Exception:
                 log.exception("Watcher poll cycle failed")
 
@@ -321,10 +343,15 @@ class Watcher:
             return
         if self._consume_self_write(file):
             return
+        now = time.monotonic()
         with self._lock:
             self._pending[(handle.id, file)] = _PendingEvent(
-                last_seen=time.monotonic(), event=event
+                last_seen=now, event=event,
             )
+            if event == EventType.MODIFY:
+                entry = self._dirty.get(file)
+                if entry is not None:
+                    self._dirty[file] = (entry[0], now)
 
     def _consume_self_write(self, path: Path) -> bool:
         """Consume a self-write entry for `path` if present and unexpired."""
@@ -364,3 +391,34 @@ class Watcher:
         ready.sort(key=lambda r: len(r[0].target.parts), reverse=True)
         for handle, file, event in ready:
             self._dispatch(handle, file, event)
+
+    def _dispatch_flushes(self) -> None:
+        """Fire FLUSH for dirty targets that have been quiet long enough."""
+        now = time.monotonic()
+        ready: List[Tuple[WatcherHandle, Path]] = []
+        with self._lock:
+            for target, (marked_at, last_ext) in list(self._dirty.items()):
+                quiet_since = max(marked_at, last_ext)
+                if now - quiet_since < self._flush_inactivity_window:
+                    continue
+                handle = self._handle_for_target(target)
+                if handle is None or EventType.FLUSH not in handle.events:
+                    del self._dirty[target]
+                    continue
+                if (handle.id, target) in self._pending:
+                    continue
+                ready.append((handle, target))
+                del self._dirty[target]
+
+        for handle, target in ready:
+            try:
+                self._dispatch(handle, target, EventType.FLUSH)
+            except Exception:
+                # Re-mark so we retry; _dispatch already logs.
+                self.mark_dirty(target)
+
+    def _handle_for_target(self, target: Path) -> Optional[WatcherHandle]:
+        for h in self._handles.values():
+            if h.target == target and EventType.FLUSH in h.events:
+                return h
+        return None

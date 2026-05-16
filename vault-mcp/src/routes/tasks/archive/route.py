@@ -174,7 +174,7 @@ def _render_archive_block(
         else:
             lines.append(_render_task_line(task, depth))
         for note in task.notes:
-            lines.append("    " * (depth + 1) + "- " + note)
+            lines.append("    " * (depth + 1 + note.indent) + "- " + note.text)
         for child in children_of.get(task.id, []):
             emit(child, depth + 1)
 

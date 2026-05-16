@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from routes.deps import App, get_app
 from schemas.efforts import Effort, EffortStatus
-from schemas.tasks import TaskStatus
+from schemas.tasks import TaskStatus, TaskType
 
 router = APIRouter()
 
@@ -42,6 +42,8 @@ def effort_list(
             tasks = []
         per_effort: dict[str, dict[str, int]] = {}
         for t in tasks:
+            if t.type == TaskType.TASKFILE:
+                continue
             bucket = per_effort.setdefault(t.effort, dict(zero))
             bucket[t.status.value] = bucket.get(t.status.value, 0) + 1
         for e in efforts:

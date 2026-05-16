@@ -16,6 +16,11 @@ from vault.tasks.parser import (  # noqa: E402
 )
 
 
+def _tasks(parser_results):
+    """Filter out the TASKFILE row, returning only TASK/MILESTONE rows."""
+    return [t for t in parser_results if t.type != TaskType.TASKFILE]
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -189,7 +194,7 @@ class TestParse:
         path = _write_root_taskfile(
             root, "### Open\n\n- [ ] My task 🆔 abc123\n"
         )
-        [task] = TaskParser(root).parse(path)
+        [task] = _tasks(TaskParser(root).parse(path))
         assert task.id == "abc123"
         assert task.status == TaskStatus.OPEN
         assert task.text == "My task"
@@ -199,13 +204,13 @@ class TestParse:
     def test_closed_task(self, tmp_path):
         root = _vault(tmp_path)
         path = _write_root_taskfile(root, "- [x] Done 🆔 done01\n")
-        [task] = TaskParser(root).parse(path)
+        [task] = _tasks(TaskParser(root).parse(path))
         assert task.status == TaskStatus.CLOSED
 
     def test_in_progress_task(self, tmp_path):
         root = _vault(tmp_path)
         path = _write_root_taskfile(root, "- [/] WIP 🆔 wip001\n")
-        [task] = TaskParser(root).parse(path)
+        [task] = _tasks(TaskParser(root).parse(path))
         assert task.status == TaskStatus.IN_PROGRESS
 
     def test_blocked_task(self, tmp_path):
@@ -213,7 +218,7 @@ class TestParse:
         path = _write_root_taskfile(
             root, "- [ ] Blocked 🆔 blk001 ⛔ other1\n"
         )
-        [task] = TaskParser(root).parse(path)
+        [task] = _tasks(TaskParser(root).parse(path))
         assert task.status == TaskStatus.BLOCKED
         assert task.dependencies.blocked == ["other1"]
 
@@ -222,7 +227,7 @@ class TestParse:
         path = _write_root_taskfile(
             root, "- [ ] Blocked 🆔 blk002 ⛔ a1,b2\n"
         )
-        [task] = TaskParser(root).parse(path)
+        [task] = _tasks(TaskParser(root).parse(path))
         assert task.dependencies.blocked == ["a1", "b2"]
 
     def test_milestone_via_section(self, tmp_path):
@@ -230,7 +235,7 @@ class TestParse:
         path = _write_root_taskfile(
             root, "## Milestones\n\n- [ ] Ship 🆔 mil001\n"
         )
-        [task] = TaskParser(root).parse(path)
+        [task] = _tasks(TaskParser(root).parse(path))
         assert task.type == TaskType.MILESTONE
 
     def test_milestone_via_tag(self, tmp_path):
@@ -238,7 +243,7 @@ class TestParse:
         path = _write_root_taskfile(
             root, "- [ ] Ship 🆔 mil002 #milestone\n"
         )
-        [task] = TaskParser(root).parse(path)
+        [task] = _tasks(TaskParser(root).parse(path))
         assert task.type == TaskType.MILESTONE
 
     def test_milestone_via_heading(self, tmp_path):
@@ -246,7 +251,7 @@ class TestParse:
         path = _write_root_taskfile(
             root, "#### Release 🆔 mil003 📅 2026-05-01\n"
         )
-        [task] = TaskParser(root).parse(path)
+        [task] = _tasks(TaskParser(root).parse(path))
         assert task.id == "mil003"
         assert task.type == TaskType.MILESTONE
         assert task.text == "Release"
@@ -255,7 +260,7 @@ class TestParse:
     def test_milestone_heading_id_generated(self, tmp_path):
         root = _vault(tmp_path)
         path = _write_root_taskfile(root, "#### Auto id heading\n")
-        [task] = TaskParser(root).parse(path)
+        [task] = _tasks(TaskParser(root).parse(path))
         assert task.id
         assert task.type == TaskType.MILESTONE
         assert task.text == "Auto id heading"
@@ -336,8 +341,11 @@ class TestParse:
             root,
             "- [ ] Task 🆔 nt0001\n    - first note\n    - second note\n",
         )
-        [task] = TaskParser(root).parse(path)
-        assert task.notes == ["first note", "second note"]
+        tasks = TaskParser(root).parse(path)
+        task = next(t for t in tasks if t.id == "nt0001")
+        assert [(n.indent, n.text) for n in task.notes] == [
+            (0, "first note"), (0, "second note"),
+        ]
 
     def test_free_tags_excludes_reserved(self, tmp_path):
         root = _vault(tmp_path)
@@ -345,7 +353,7 @@ class TestParse:
             root,
             "- [ ] Task 🆔 ft0001 📅 2026-01-01 #stub #estimate:2h\n",
         )
-        [task] = TaskParser(root).parse(path)
+        [task] = _tasks(TaskParser(root).parse(path))
         # id, due, estimate are reserved; stub is free.
         assert "stub" in task.tags
         assert not any(t.startswith("id") for t in task.tags)
@@ -358,7 +366,7 @@ class TestParse:
             root,
             "- [ ] T 🆔 td0001 ➕ 2026-01-01 📅 2026-02-01 ⏳ 2026-01-15\n",
         )
-        [task] = TaskParser(root).parse(path)
+        [task] = _tasks(TaskParser(root).parse(path))
         assert task.time_details.created == date(2026, 1, 1)
         assert task.time_details.due == date(2026, 2, 1)
         assert task.time_details.scheduled == date(2026, 1, 15)
@@ -366,14 +374,14 @@ class TestParse:
     def test_id_generated_when_missing(self, tmp_path):
         root = _vault(tmp_path)
         path = _write_root_taskfile(root, "- [ ] No id task\n")
-        [task] = TaskParser(root).parse(path)
+        [task] = _tasks(TaskParser(root).parse(path))
         assert task.id  # auto-generated
 
     def test_frontmatter_skipped(self, tmp_path):
         root = _vault(tmp_path)
         content = "---\ntags: [x]\n---\n\n- [ ] T 🆔 fm0001\n"
         path = _write_root_taskfile(root, content)
-        [task] = TaskParser(root).parse(path)
+        [task] = _tasks(TaskParser(root).parse(path))
         assert task.id == "fm0001"
 
     def test_effort_name_from_active(self, tmp_path):
@@ -381,7 +389,7 @@ class TestParse:
         eff = _make_effort(root, "alpha")
         path = eff / ROOT_TASKFILE
         path.write_text("- [ ] T 🆔 aa0001\n", encoding="utf-8")
-        [task] = TaskParser(root).parse(path)
+        [task] = _tasks(TaskParser(root).parse(path))
         assert task.effort == "alpha"
 
     def test_effort_name_from_backlog(self, tmp_path):
@@ -389,7 +397,7 @@ class TestParse:
         eff = _make_effort(root, "beta", backlog=True)
         path = eff / ROOT_TASKFILE
         path.write_text("- [ ] T 🆔 bb0001\n", encoding="utf-8")
-        [task] = TaskParser(root).parse(path)
+        [task] = _tasks(TaskParser(root).parse(path))
         assert task.effort == "beta"
 
     def test_wikilink_lines_ignored(self, tmp_path):
@@ -398,6 +406,6 @@ class TestParse:
         path = _write_root_taskfile(
             root, "- [[SomeNote]]\n- [ ] Real 🆔 wl0001\n"
         )
-        [task] = TaskParser(root).parse(path)
+        [task] = _tasks(TaskParser(root).parse(path))
         assert task.id == "wl0001"
 

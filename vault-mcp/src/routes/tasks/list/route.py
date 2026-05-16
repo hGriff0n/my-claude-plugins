@@ -44,6 +44,10 @@ def task_list(
     if type is not None:
         conditions.append('"type" = ?')
         params.append(type.value)
+    else:
+        # TASKFILE rows are persisted per-file metadata, not user-facing tasks.
+        conditions.append('"type" != ?')
+        params.append(TaskType.TASKFILE.value)
     if due_before is not None and scheduled_before is not None:
         conditions.append(
             '("time_details.due" <= ? OR "time_details.scheduled" <= ?)'

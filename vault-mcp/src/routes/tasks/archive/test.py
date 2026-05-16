@@ -60,7 +60,10 @@ def test_archive_explicit_ids(tmp_path):
     assert resp.status_code == 200, resp.text
     closed = {u["id"] for u in resp.json()["updates"] if u["action"] == "CLOSED"}
     assert closed == {"ar1001"}
-    remaining = {t.id for t in app.db.query('SELECT * FROM "task"')}
+    remaining = {
+        t.id for t in app.db.query('SELECT * FROM "task"')
+        if not t.id.startswith("tf_")
+    }
     assert remaining == {"ar1002"}
 
 

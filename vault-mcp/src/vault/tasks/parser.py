@@ -7,6 +7,7 @@ system (`specs/systems/tasks/readme.md`).
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from dataclasses import dataclass
@@ -16,13 +17,13 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import emoji
 
-from schemas.tasks import Dependencies, Task, TaskStatus, TaskType
+from schemas.tasks import Dependencies, Note, Task, TaskStatus, TaskType
 from schemas.time import TimeBlock
 from utils.formatting import EMOJI_TO_TAG, render_tags
 from utils.ids import generate_task_id
 from vault.parser import Parser
 from vault.efforts.parser import BACKLOG_DIR, EFFORTS_DIR
-from vault.watcher import EventType, WatchCriterion, WatcherHandle
+from vault.watcher import EventType, WatchCriterion, WatcherHandle, active_origin
 
 log = logging.getLogger(__name__)
 
@@ -104,6 +105,14 @@ Update = Union[
 ]
 
 
+# Field names tracked for the per-task dirty-field merge during flush.
+_FIELD_TEXT = "text"
+_FIELD_STATUS = "status"
+_FIELD_DEPENDENCIES = "dependencies"
+_FIELD_TAGS = "tags"
+_FIELD_TIME = "time_details"
+
+
 # ---- Parser ----------------------------------------------------------------
 
 
@@ -114,6 +123,8 @@ class TaskParser:
         self._db: Any = None
         self._watcher: Any = None
         self._taskfile_handles: Dict[Path, WatcherHandle] = {}
+        self._dirty_fields: Dict[str, Set[str]] = {}
+        self._file_for_task: Dict[str, Path] = {}
 
     # ---- initialize ----
 
@@ -125,13 +136,33 @@ class TaskParser:
         self.register_taskfile(root)
 
     def register_taskfile(self, taskfile: Path) -> None:
-        events = frozenset({EventType.CREATE, EventType.MODIFY, EventType.DELETE})
+        events = frozenset({
+            EventType.CREATE, EventType.MODIFY, EventType.DELETE,
+            EventType.FLUSH,
+        })
         handle = self._watcher.register(
             WatchCriterion(target=taskfile, events=events),
             self._on_taskfile_event,
         )
-        logging.info(f'[TASKS] Registering watcher for file={taskfile}')
+        log.info('[TASKS] Registering watcher for file=%s', taskfile)
         self._taskfile_handles[taskfile] = handle
+
+    def taskfile_handles_under(
+        self, folder: Path,
+    ) -> List[Tuple[Path, WatcherHandle]]:
+        """Return (taskfile, handle) pairs for every taskfile under `folder`."""
+        try:
+            folder_resolved = folder.resolve()
+        except OSError:
+            folder_resolved = folder
+        out: List[Tuple[Path, WatcherHandle]] = []
+        for tf, handle in self._taskfile_handles.items():
+            try:
+                tf.resolve().relative_to(folder_resolved)
+            except (ValueError, OSError):
+                continue
+            out.append((tf, handle))
+        return out
 
     def _elements_for_file(self, file: Path) -> List[Task]:
         try:
@@ -163,17 +194,30 @@ class TaskParser:
         if event == EventType.DELETE:
             for task in self._elements_for_file(file):
                 self._db.delete(task)
-        elif file.is_file():
-            for task in self.parse(file):
-                self._db.update(task)
+                self._dirty_fields.pop(task.id, None)
+                self._file_for_task.pop(task.id, None)
+            return
+        if event == EventType.FLUSH:
+            self._flush(file)
+            return
+        if file.is_file():
+            self._reparse_and_seed(file)
         self.prune_dangling_refs()
 
-    def prune_dangling_refs(self) -> None:
-        """Drop blocked / parent / child references to ids no longer in the table.
+    def _reparse_and_seed(self, file: Path) -> None:
+        parsed = self.parse(file)
+        parsed_ids = {t.id for t in parsed}
+        for task in self._elements_for_file(file):
+            if task.id not in parsed_ids:
+                self._db.delete(task)
+                self._dirty_fields.pop(task.id, None)
+                self._file_for_task.pop(task.id, None)
+        for task in parsed:
+            self._db.update(task)
+            self._file_for_task[task.id] = file
 
-        Runs after every parse cycle so the in-memory index converges to a
-        state where every reference resolves to a live task.
-        """
+    def prune_dangling_refs(self) -> None:
+        """Drop blocked / parent / child references to ids no longer in the table."""
         tasks = self._db.query('SELECT * FROM "task"')
         valid_ids = {t.id for t in tasks}
         for task in tasks:
@@ -200,7 +244,7 @@ class TaskParser:
             return []
 
         lines = file.read_text(encoding="utf-8").splitlines()
-        body_start = _skip_frontmatter(lines)
+        body_start, frontmatter_lines = _read_frontmatter(lines)
 
         effort_name = self._effort_for(file)
         last_updated = date.fromtimestamp(file.stat().st_mtime)
@@ -213,7 +257,16 @@ class TaskParser:
             if rec.parent is not None:
                 children_of[rec.parent.tags["id"]].append(rec.tags["id"])
 
-        return [
+        out: List[Task] = [
+            _taskfile_row(
+                file=file,
+                vault_root=self.vault_root,
+                effort_name=effort_name,
+                frontmatter_lines=frontmatter_lines,
+                last_updated=last_updated,
+            ),
+        ]
+        out.extend(
             self._build_task(
                 rec=rec,
                 effort_name=effort_name,
@@ -222,33 +275,118 @@ class TaskParser:
                 notes=notes_by_id.get(rec.tags["id"], []),
             )
             for rec in records
-        ]
+        )
+        return out
 
     def update(self, task: Task, op: Update) -> None:
         if isinstance(op, CreateTask):
             if not task.id:
                 task.id = generate_task_id()
             self._db.update(task)
+            self._mark_task_dirty(task, {
+                _FIELD_TEXT, _FIELD_STATUS, _FIELD_DEPENDENCIES,
+                _FIELD_TAGS, _FIELD_TIME,
+            })
             return
         if isinstance(op, ArchiveTask):
             self._db.delete(task)
+            self._dirty_fields.pop(task.id, None)
+            file = self._file_for_task.pop(task.id, None) or self._resolve_file(task)
+            if file is not None and active_origin() is None:
+                self._watcher.mark_dirty(file)
             return
+        touched: Set[str] = set()
         if isinstance(op, UpdateStatus):
             task.status = op.status
+            touched.add(_FIELD_STATUS)
         elif isinstance(op, UpdateText):
             task.text = op.text
+            touched.add(_FIELD_TEXT)
         elif isinstance(op, UpdateDependencies):
             task.dependencies = op.dependencies
             if op.dependencies.blocked:
                 task.status = TaskStatus.BLOCKED
+            touched.add(_FIELD_DEPENDENCIES)
+            touched.add(_FIELD_STATUS)
         elif isinstance(op, UpdateMetadata):
             if op.tags is not None:
                 task.tags = list(op.tags)
+                touched.add(_FIELD_TAGS)
             if op.time_details is not None:
                 task.time_details = op.time_details
+                touched.add(_FIELD_TIME)
         else:
             raise TypeError(f"Unknown Update: {op!r}")
         self._db.update(task)
+        self._mark_task_dirty(task, touched)
+
+    def _mark_task_dirty(self, task: Task, fields: Set[str]) -> None:
+        if active_origin() is not None:
+            # Inbound (parse-driven) write; the file is authoritative.
+            return
+        if not fields:
+            return
+        self._dirty_fields.setdefault(task.id, set()).update(fields)
+        file = self._file_for_task.get(task.id) or self._resolve_file(task)
+        if file is None:
+            return
+        self._file_for_task[task.id] = file
+        self._watcher.mark_dirty(file)
+
+    def _resolve_file(self, task: Task) -> Optional[Path]:
+        if task.effort == "none":
+            return self.vault_root / ROOT_TASKFILE
+        active = self.vault_root / EFFORTS_DIR / task.effort / ROOT_TASKFILE
+        if active.is_file():
+            return active
+        backlog = (
+            self.vault_root / EFFORTS_DIR / BACKLOG_DIR
+            / task.effort / ROOT_TASKFILE
+        )
+        if backlog.is_file():
+            return backlog
+        return None
+
+    # ---- flush ----
+
+    def flush_file(self, file: Path) -> None:
+        """Synchronously flush `file`. Used at shutdown / before folder moves."""
+        self._flush(file)
+
+    def _flush(self, file: Path) -> None:
+        if not file.is_file():
+            # File was deleted out from under us; nothing to project.
+            return
+
+        on_disk = {t.id: t for t in self.parse(file)}
+        db_tasks = {t.id: t for t in self._elements_for_file(file)}
+
+        merged: Dict[str, Task] = {}
+        for tid, db_task in db_tasks.items():
+            parsed = on_disk.get(tid)
+            if parsed is None:
+                # Created in DB but not yet on disk — emit as-is.
+                merged[tid] = db_task
+                continue
+            dirty = self._dirty_fields.get(tid, set())
+            merged[tid] = _merge_task(parsed, db_task, dirty)
+
+        # Fold tasks present on disk but absent from DB back into the DB.
+        for tid, parsed in on_disk.items():
+            if tid not in merged:
+                merged[tid] = parsed
+                self._db.update(parsed)
+
+        taskfile_row = merged.get(_taskfile_id(file, self.vault_root))
+        tasks = [t for t in merged.values() if t.type != TaskType.TASKFILE]
+        content = _render_file(taskfile_row, tasks)
+
+        self._watcher.mark_self_write(file)
+        file.write_text(content, encoding="utf-8")
+
+        for tid in merged:
+            self._dirty_fields.pop(tid, None)
+            self._file_for_task[tid] = file
 
     # ---- parse helpers ----
 
@@ -280,6 +418,7 @@ class TaskParser:
                         section=section,
                         parent=None,
                         type=TaskType.MILESTONE,
+                        line_index=i,
                     )
                     records.append(rec)
                     current_milestone = rec
@@ -322,6 +461,7 @@ class TaskParser:
                 section=section,
                 parent=parent,
                 type=TaskType.MILESTONE if is_milestone_tag else TaskType.TASK,
+                line_index=i,
             )
             records.append(rec)
             stack.append(rec)
@@ -329,8 +469,8 @@ class TaskParser:
 
     def _collect_notes(
         self, lines: List[str], body_start: int,
-    ) -> Dict[str, List[str]]:
-        notes: Dict[str, List[str]] = {}
+    ) -> Dict[str, List[Note]]:
+        notes: Dict[str, List[Note]] = {}
         current_id: Optional[str] = None
         current_indent = -1
         for i in range(body_start, len(lines)):
@@ -349,9 +489,13 @@ class TaskParser:
                 continue
             if current_id and stripped.startswith("-"):
                 lead = raw[: len(raw) - len(raw.lstrip())]
-                if _indent_level(lead) > current_indent:
+                note_indent = _indent_level(lead)
+                if note_indent > current_indent:
                     body = stripped[1:].lstrip()
-                    notes.setdefault(current_id, []).append(body)
+                    relative = max(0, note_indent - current_indent - 1)
+                    notes.setdefault(current_id, []).append(
+                        Note(indent=relative, text=body),
+                    )
                     continue
             current_id = None
         return notes
@@ -363,7 +507,7 @@ class TaskParser:
         effort_name: str,
         last_updated: date,
         children: List[str],
-        notes: List[str],
+        notes: List[Note],
     ) -> Task:
         tags = rec.tags
         blocked_value = tags.get("blocked", "")
@@ -396,6 +540,7 @@ class TaskParser:
             status=status,
             text=rec.title,
             effort=effort_name,
+            file_order=rec.line_index,
             estimate=tags.get("estimate", ""),
             actual=tags.get("actual", ""),
             notes=notes,
@@ -424,7 +569,68 @@ class TaskParser:
         return "none"
 
 
-# ---- formatting helpers (used by archive route) ---------------------------
+# ---- TASKFILE row ----------------------------------------------------------
+
+
+def _taskfile_id(file: Path, vault_root: Path) -> str:
+    try:
+        rel = file.relative_to(vault_root).as_posix()
+    except ValueError:
+        rel = str(file)
+    return "tf_" + hashlib.sha1(rel.encode("utf-8")).hexdigest()[:14]
+
+
+def _taskfile_row(
+    *,
+    file: Path,
+    vault_root: Path,
+    effort_name: str,
+    frontmatter_lines: List[str],
+    last_updated: date,
+) -> Task:
+    try:
+        rel = file.relative_to(vault_root).as_posix()
+    except ValueError:
+        rel = str(file)
+    notes = [
+        Note(indent=0, text=line)
+        for line in frontmatter_lines
+        if line.strip()
+    ]
+    return Task(
+        id=_taskfile_id(file, vault_root),
+        type=TaskType.TASKFILE,
+        status=TaskStatus.OPEN,
+        text=rel,
+        effort=effort_name,
+        file_order=0,
+        notes=notes,
+        tags=[],
+        dependencies=Dependencies(blocked=[], parent="", children=[]),
+        time_details=TimeBlock(last_updated=last_updated),
+    )
+
+
+# ---- field-level merge -----------------------------------------------------
+
+
+def _merge_task(parsed: Task, db: Task, dirty_fields: Set[str]) -> Task:
+    """DB wins for dirty fields; the parsed (on-disk) value wins otherwise."""
+    out = parsed.model_copy(deep=True)
+    if _FIELD_STATUS in dirty_fields:
+        out.status = db.status
+    if _FIELD_TEXT in dirty_fields:
+        out.text = db.text
+    if _FIELD_DEPENDENCIES in dirty_fields:
+        out.dependencies = db.dependencies
+    if _FIELD_TAGS in dirty_fields:
+        out.tags = list(db.tags)
+    if _FIELD_TIME in dirty_fields:
+        out.time_details = db.time_details
+    return out
+
+
+# ---- formatting helpers ----------------------------------------------------
 
 
 def _build_meta_tags(task: Task) -> Dict[str, str]:
@@ -486,6 +692,78 @@ def _render_milestone_line(task: Task) -> str:
     )
 
 
+def _depth_of(task: Task, by_id: Dict[str, Task]) -> int:
+    depth = 0
+    parent_id = task.dependencies.parent
+    while parent_id:
+        parent = by_id.get(parent_id)
+        if parent is None or parent.type == TaskType.MILESTONE:
+            break
+        depth += 1
+        parent_id = parent.dependencies.parent
+    return depth
+
+
+def _render_file(taskfile: Optional[Task], tasks: List[Task]) -> str:
+    by_id = {t.id: t for t in tasks}
+    ordered = _order_tasks(tasks)
+
+    out: List[str] = []
+    if taskfile is not None and taskfile.notes:
+        out.append("---")
+        for note in taskfile.notes:
+            out.append(note.text)
+        out.append("---")
+        out.append("")
+
+    for task in ordered:
+        if task.type == TaskType.MILESTONE:
+            out.append(_render_milestone_line(task))
+            continue
+        depth = _depth_of(task, by_id)
+        out.append(_render_task_line(task, depth))
+        for note in task.notes:
+            file_indent = "    " * (depth + 1 + note.indent)
+            out.append(f"{file_indent}- {note.text}")
+
+    return "\n".join(out) + ("\n" if out else "")
+
+
+def _order_tasks(tasks: List[Task]) -> List[Task]:
+    """Sort tasks for emission, preserving original order where known."""
+    by_parent: Dict[str, List[Task]] = {}
+    by_id = {t.id: t for t in tasks}
+    for t in tasks:
+        by_parent.setdefault(t.dependencies.parent, []).append(t)
+
+    def emit_children(parent_id: str) -> List[Task]:
+        siblings = by_parent.get(parent_id, [])
+        existing = sorted(
+            (s for s in siblings if s.file_order >= 0),
+            key=lambda s: s.file_order,
+        )
+        new = [s for s in siblings if s.file_order < 0]
+        out: List[Task] = []
+        for sib in existing + new:
+            out.append(sib)
+            out.extend(emit_children(sib.id))
+        return out
+
+    roots = [
+        t for t in tasks
+        if not t.dependencies.parent or t.dependencies.parent not in by_id
+    ]
+    roots_existing = sorted(
+        (r for r in roots if r.file_order >= 0), key=lambda r: r.file_order,
+    )
+    roots_new = [r for r in roots if r.file_order < 0]
+    out: List[Task] = []
+    for root in roots_existing + roots_new:
+        out.append(root)
+        out.extend(emit_children(root.id))
+    return out
+
+
 # ---- record / private helpers ----------------------------------------------
 
 
@@ -499,6 +777,7 @@ class _Record:
     section: str
     parent: Optional["_Record"]
     type: TaskType = TaskType.TASK
+    line_index: int = -1
 
 
 def _indent_level(indent: str) -> int:
@@ -518,16 +797,22 @@ def _is_emoji_key(name: str) -> bool:
     return any(emoji.is_emoji(c) for c in name)
 
 
-def _skip_frontmatter(lines: List[str]) -> int:
+def _read_frontmatter(lines: List[str]) -> Tuple[int, List[str]]:
+    """Return (body_start_index, frontmatter_body_lines)."""
     i = 0
     while i < len(lines) and not lines[i].strip():
         i += 1
     if i >= len(lines) or lines[i].strip() != "---":
-        return 0
+        return 0, []
     for j in range(i + 1, len(lines)):
         if lines[j].strip() == "---":
-            return j + 1
-    return 0
+            return j + 1, list(lines[i + 1 : j])
+    return 0, []
+
+
+def _skip_frontmatter(lines: List[str]) -> int:
+    body_start, _ = _read_frontmatter(lines)
+    return body_start
 
 
 # ---- tag tail parsing (mirrors src/parsers/task_parser.py) -----------------

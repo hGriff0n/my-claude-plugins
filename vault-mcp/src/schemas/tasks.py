@@ -30,6 +30,11 @@ class Dependencies(BaseModel):
     children: List[str]  # Task ids of child tasks (B = A.parent <=> A in B.children)
 
 
+class Note(BaseModel):
+    indent: int  # Indent level relative to the parent task (0 = directly under)
+    text: str  # Bullet text, leading "- " stripped
+
+
 class Task(BaseModel):
     """A single task
     """
@@ -38,9 +43,10 @@ class Task(BaseModel):
     status: TaskStatus  # Whether the task is open/closed/blocked/etc
     text: str  # The task "title" line
     effort: str  # The parent effort this task belongs to (or 'none' if in the root taskfile)
+    file_order: int = -1  # 0-based line index in source file at last parse; -1 if not yet on disk
     estimate: str = ""  # Estimated effort/duration (e.g. "2h", "30m"); empty if unset
     actual: str = ""  # Recorded actual effort/duration; empty if unset
-    notes: List[str]  # A list of bullet points that are used to attach additional information/investigation to tasks
+    notes: List[Note]  # Bullet points attached to this task (indent relative to parent)
     tags: List[str]  # Tags/properties that are specially parsed from the taskline
     dependencies: Dependencies  # References to other tasks. Handles both parent-child and blocking relations
     time_details: TimeBlock  # A collection of various time properties, notably `created` and `last_updated`
