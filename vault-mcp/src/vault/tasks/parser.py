@@ -249,7 +249,11 @@ class TaskParser:
         effort_name = self._effort_for(file)
         last_updated = date.fromtimestamp(file.stat().st_mtime)
 
-        records = self._collect_records(lines, body_start)
+        try:
+            rel_path = file.relative_to(self.vault_root).as_posix()
+        except ValueError:
+            rel_path = str(file)
+        records = self._collect_records(lines, body_start, rel_path)
         notes_by_id = self._collect_notes(lines, body_start)
 
         children_of: Dict[str, List[str]] = {r.tags["id"]: [] for r in records}
@@ -299,6 +303,13 @@ class TaskParser:
         if isinstance(op, UpdateStatus):
             task.status = op.status
             touched.add(_FIELD_STATUS)
+            if op.status == TaskStatus.CLOSED:
+                if task.time_details.completed is None:
+                    task.time_details.completed = date.today()
+                    touched.add(_FIELD_TIME)
+            elif task.time_details.completed is not None:
+                task.time_details.completed = None
+                touched.add(_FIELD_TIME)
         elif isinstance(op, UpdateText):
             task.text = op.text
             touched.add(_FIELD_TEXT)
@@ -391,7 +402,7 @@ class TaskParser:
     # ---- parse helpers ----
 
     def _collect_records(
-        self, lines: List[str], body_start: int,
+        self, lines: List[str], body_start: int, rel_path: str,
     ) -> List["_Record"]:
         records: List[_Record] = []
         stack: List[_Record] = []
@@ -408,7 +419,7 @@ class TaskParser:
                 if ms:
                     title, tags, dataview_tags = _split_tags(ms.group(1))
                     if not tags.get("id"):
-                        tags["id"] = generate_task_id()
+                        tags["id"] = _stable_id(rel_path, i, title)
                     rec = _Record(
                         indent=-1,
                         checkbox="",
@@ -440,7 +451,7 @@ class TaskParser:
             title, tags, dataview_tags = _split_tags(m.group(3))
 
             if not tags.get("id"):
-                tags["id"] = generate_task_id()
+                tags["id"] = _stable_id(rel_path, i, title)
 
             while stack and stack[-1].indent >= indent:
                 stack.pop()
@@ -778,6 +789,19 @@ class _Record:
     parent: Optional["_Record"]
     type: TaskType = TaskType.TASK
     line_index: int = -1
+
+
+def _stable_id(rel_path: str, line_index: int, title: str) -> str:
+    """Deterministic id for an id-less line, stable across re-parses.
+
+    Using the file path, line position, and title keeps the seed parse and
+    the flush-time re-parse in agreement, so a generated id is reconciled
+    rather than duplicated when the line is written back.
+    """
+    digest = hashlib.sha1(
+        f"{rel_path}\x00{line_index}\x00{title}".encode("utf-8")
+    )
+    return digest.hexdigest()[:6]
 
 
 def _indent_level(indent: str) -> int:

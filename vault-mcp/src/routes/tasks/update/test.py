@@ -29,6 +29,51 @@ def test_update_status(tmp_path):
     assert resp.json()["status"] == "CLOSED"
 
 
+def test_close_writes_completed_date(tmp_path):
+    vault = make_vault(tmp_path)
+    path = vault / ROOT_TASKFILE
+    path.write_text("- [ ] T 🆔 cd0001\n", encoding="utf-8")
+    client, app = make_client(vault, router)
+
+    resp = client.patch("/tasks/cd0001", json={"status": "CLOSED"})
+    assert resp.status_code == 200
+    assert resp.json()["time_details"]["completed"] is not None
+
+    app.task_parser.flush_file(path)
+    assert "✅" in path.read_text(encoding="utf-8")
+
+
+def test_reopen_clears_completed_date(tmp_path):
+    vault = make_vault(tmp_path)
+    path = vault / ROOT_TASKFILE
+    path.write_text(
+        "- [x] T 🆔 cr0001 ✅ 2026-01-01\n", encoding="utf-8"
+    )
+    client, app = make_client(vault, router)
+
+    resp = client.patch("/tasks/cr0001", json={"status": "OPEN"})
+    assert resp.status_code == 200
+    assert resp.json()["time_details"]["completed"] is None
+
+    app.task_parser.flush_file(path)
+    assert "✅" not in path.read_text(encoding="utf-8")
+
+
+def test_idless_milestone_not_duplicated_on_flush(tmp_path):
+    vault = make_vault(tmp_path)
+    path = vault / ROOT_TASKFILE
+    path.write_text(
+        "#### Release\n\n- [ ] T 🆔 md0001\n", encoding="utf-8"
+    )
+    client, app = make_client(vault, router)
+
+    resp = client.patch("/tasks/md0001", json={"status": "CLOSED"})
+    assert resp.status_code == 200
+
+    app.task_parser.flush_file(path)
+    assert path.read_text(encoding="utf-8").count("Release") == 1
+
+
 def test_update_tags(tmp_path):
     vault = make_vault(tmp_path)
     (vault / ROOT_TASKFILE).write_text(

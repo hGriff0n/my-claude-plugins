@@ -40,7 +40,7 @@ Per file:
     - **Emoji**: known emoji → next whitespace token is the value (`📅 2026-02-15` → `due=2026-02-15`). Unknown emoji greedily consume tokens until the next metadata token.
     - **Hashtag**: `#name` → flag tag with empty value; `#name:value` → tag with value.
     - **Dataview**: `[name::value]` or `(name::value)` → tag with value, name added to `dataview_tags`. Tags `estimate`, `actual`, `effort` are always re-rendered as dataview on write regardless of original syntax.
-  - `id` ← `tags["id"]` if present (any of the three syntaxes); if absent, an id is generated, set on the task, and the file is marked dirty so the next FLUSH writes the id back to disk.
+  - `id` ← `tags["id"]` if present (any of the three syntaxes); if absent, a deterministic id is derived from the file path, line index, and title, set on the task, and the file is marked dirty so the next FLUSH writes the id back to disk. The id must be stable across re-parses of identical content so that the seed parse and the flush-time re-parse agree on the same id — otherwise the generated id would diverge between the database and disk and the line would be duplicated on write back.
   - `file_order` ← the 0-based line index of the task line in the source file at the time of this parse. This is the field the writer sorts by to preserve original ordering. Tasks created via the API but not yet on disk carry `file_order = -1`; the writer slots them in after their parent's existing child block (or at end-of-section for parentless tasks). Re-parse refreshes `file_order` on every task whose line is still recognisable.
   - `type` ← `MILESTONE` if the line is an L4 heading (`#### …`), or — for back-compat — if the task is under a milestones heading or carries a `milestone` tag; else `TASK`.
 
@@ -61,7 +61,7 @@ Per file:
 The parser's `Update` type enumerates:
 
 - `create` — register a new task with the database. The task arrives with `file_order = -1`; the next FLUSH inserts its rendered line into the source file after the parent's existing child block (or at end-of-section for parentless tasks).
-- `update_status` — change a task's status. On FLUSH the checkbox glyph is rewritten in place.
+- `update_status` — change a task's status. On FLUSH the checkbox glyph is rewritten in place. Closing a task (status → `CLOSED`) stamps `time_details.completed` with today's date when it is not already set, so the `✅ <date>` tag is written back; moving a task out of `CLOSED` clears `completed`.
 - `update_text` — change a task's title.
 - `update_dependencies` — change a task's blocked / parent / children references. The `blocked` tag is re-rendered on FLUSH; parent/children are derived from indent on parse and emitted via indent on write.
 - `update_metadata` — change individual tag entries (`due`, `scheduled`, `created`, `completed`, arbitrary `#tag` / dataview entries). All tags re-render through the canonical formatter so on-disk syntax converges.
