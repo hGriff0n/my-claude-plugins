@@ -1,0 +1,5 @@
+{
+  "name": "linear-issue-tools",
+  "description": "Review Linear issues for autonomous-agent (Cyrus) readiness before sending them, and commit approved rewrites back to Linear on an explicit user command.",
+  "version": "0.1.0"
+}

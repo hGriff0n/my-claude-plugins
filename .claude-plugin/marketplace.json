@@ -29,6 +29,10 @@
       "source": "./plugins/other"
     },
     {
+      "name": "linear-cyrus",
+      "source": "./plugins/linear-issue-tools"
+    },
+    {
       "name": "daily",
       "source": {
         "source": "url",
