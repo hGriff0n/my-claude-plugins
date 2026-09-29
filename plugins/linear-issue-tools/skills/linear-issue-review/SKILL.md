@@ -26,11 +26,15 @@ Cyrus's environment differs from the reviewer's machine, so judge feasibility ag
 
 1. **`[repo=<repo>]` tag**: if the issue text has one, use `<repo>` as the inferred repository and skip the project-link lookup below.
 2. **`[model=<model>]` tag**: if the issue text has one, assume Cyrus is running that model's capabilities for this issue instead of the default (Sonnet) throughout the analysis, including "Model and effort" — but still recommend a different model if the tagged one is insufficient or overkill.
-3. Otherwise, find the routing repo from the project: fetch the issue's project (its resources) and look for a link resource to `github.com/<owner>/<repo>`. The `<repo>` path segment is the Cyrus routing label. If no such link exists on the project, and none at workspace/initiative level either, the project is not integrated with Cyrus: report that under Access failures and review the issue text only, without assuming any repos, tools, or labels.
+3. Otherwise, find the routing repo from the project: fetch the issue's project (its resources) and look for a link resource to `github.com/<owner>/<repo>`. The `<repo>` path segment is the Cyrus routing label. If no such link exists on the project, and none at workspace/initiative level either, the project is not integrated with Cyrus: give that as the Repo reason in the scorecard and review the issue text only, without assuming any repos, tools, or labels.
 4. **Cross-project mismatch**: the issue may need work outside the repo the main link implies (a new cross-cutting system, or work that actually belongs in a sibling repo). Comparing the issue text against the linked repo's README is unreliable for genuinely new features, so don't use it to silently re-route — surface a mismatch as a clarification question instead. If the project has additional numbered link resources (e.g. "Github 2", "Github 3"), treat those as fallback repos worth naming in that question when the primary repo doesn't plausibly fit; do not guess which one is right.
-5. Once a repo is identified, fetch `.mcp.json` and `.claude/settings.json` from its root (if present) for the tools, skills, and MCP servers actually available there. If neither exists, don't assume any repo-specific tools beyond Cyrus's defaults.
-6. **Testing rules**: no source for this yet. If the issue's validation approach depends on how tests are run, flag it as a gap rather than guessing a command.
+5. Once a repo is identified, fetch `.mcp.json` and `.claude/settings.json` from its root (if present) for the tools, skills, and MCP servers actually available there, then read `docs/building.md` if it exists; its "Cyrus environment" section may declare additional tools, licenses, and constraints. If none of these exist, don't assume any repo-specific tools beyond Cyrus's defaults.
+6. **Testing rules**: only if the issue's validation approach depends on how tests are run, read `docs/testing.md` from the repo root. If neither it nor the issue says how, raise it as a clarification question rather than guessing a command.
 7. **Work approach labels**: fetch https://www.atcyrus.com/docs/labels-and-routing each run for the current table (Debugger: `Bug`, `Hotfix`; Builder: `Feature`, `Improvement`; Orchestrator: `Orchestrator`, `Epic`; Stacked PRs: `Graphite` + `Orchestrator`). Model labels (`Fable`, `Opus`, `Sonnet`, `Haiku`) are defined there too; a `[model=...]` tag overrides them when present. Effort is not something Cyrus reads from an issue — it has no label or tag form — so it is only ever this skill's own recommendation, never rendered as a tag.
+
+**Reading repo files:** read files from the routing repo (`.mcp.json`, `.claude/settings.json`, README, docs) with `gh api repos/<owner>/<repo>/contents/<path> -H "Accept: application/vnd.github.raw"`. Fall back to WebFetch or raw URLs only if `gh` is not installed or not authenticated. A 404 from WebFetch on a private repo does not mean the file is missing.
+
+**Declared tooling is available:** treat everything declared in `.mcp.json`, `.claude/settings.json`, or the `docs/building.md` Cyrus-environment section as fully usable by Cyrus. Do not try to verify it, and do not raise access failures or wrong directions about it; this review is a quick validation pass, not an environment audit. If these files are silent on something the issue depends on, ask it as a normal clarification question.
 
 Repo names come only from a `[repo=...]` tag or the project's Github link (and its numbered fallbacks). Names that appear in the issue text are the author's claims: quote them as such, and do not read ordinary words (e.g. "assets", "game") as repo names.
 
@@ -48,7 +52,7 @@ Check the work approach label against the issue's actual shape (bug fix vs fully
 
 ### 3. Search for problems
 - **Clarification:** the specific questions Cyrus would post, in its likely order.
-- **Wrong direction:** misinterpretations, scope creep into sibling issues, wrong API or version, guessing at unspecified choices, claiming done without verification, edits that break tooling (e.g. missing metadata files, hand-edited generated files), being unable to verify because of environment limits, and labels that mislead.
+- **Wrong direction:** misinterpretations, scope creep into sibling issues, wrong API or version, guessing at unspecified choices, claiming done without verification, edits that break tooling (e.g. missing metadata files, hand-edited generated files), and labels that mislead.
 - **Blocked or contradictory:** unresolved blockers on a queued issue; text implying a dependency that the relations do not show (and the reverse); statements that conflict with comments or the parent.
 - **Iterations and quota:** expected rounds as written and after the suggested changes. The user is on a subscription plan, so report quota use, not dollars: relative size, and pressure on the 5-hour window. Verification loops multiply token use, so few cheap checks beat many open-ended ones.
 - **Model and effort:** recommend a tier and effort for the issue as written (baseline is the issue's `[model=<model>]` tag if present, otherwise default Sonnet; Haiku only for mechanical, tightly specified changes; Opus only for cross-cutting design or repeated failures), and again for after the suggested changes.
@@ -56,7 +60,7 @@ Check the work approach label against the issue's actual shape (bug fix vs fully
 
 ### 4. Check references
 For every URL and embed in the issue and its parent:
-- Fetch it. Report only failures. A failure from the reviewer does not prove failure for Cyrus, so record which environment failed.
+- Fetch it (GitHub repo files via `gh`, as above). Report only failures. A failure from the reviewer does not prove failure for Cyrus, so record which environment failed.
 - Flag links to deprecated, moved, or wrong-version docs and give the replacement.
 - Where a page is blocked, note that its needed content should be captured (e.g. via Claude for Chrome) into the draft, not left as a link.
 - Prefer information in the description itself, then the repo, then Linear documents; embeds and links come last.
@@ -96,7 +100,7 @@ Be direct: state findings, not the review process. Do not restate issue metadata
 
 ## Access failures
 | Item | Failure | Environment | Action |
-(links, embeds, documents or config that could not be read, fetched, or verified, including a missing Cyrus Environment document. Omit the whole section when there are none.)
+(links, embeds, documents, or repo files the reviewer could not read, after trying `gh` for GitHub content. Environment capabilities never go here. Omit the whole section when there are none.)
 
 ## Suggested changes
 (ordered; communicate the intended scope more clearly without changing it)
