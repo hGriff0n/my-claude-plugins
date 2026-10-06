@@ -53,6 +53,8 @@ Check the work approach label against the issue's actual shape (bug fix vs fully
 ### 3. Search for problems
 - **Clarification:** the specific questions Cyrus would post, in its likely order.
 - **Wrong direction:** misinterpretations, scope creep into sibling issues, wrong API or version, guessing at unspecified choices, claiming done without verification, edits that break tooling (e.g. missing metadata files, hand-edited generated files), and labels that mislead.
+  - **Verification built into the product:** a criterion phrased as something to build ("a command that verifies the uploaded data matches") when the intent is evidence in the PR. Cyrus will ship it as a feature and design around it (checksum columns, self-test modes, row-matching keys). Reword it so it can be met with what the issue already ships plus standard tools, with the results reported in the PR.
+  - **Reports written into docs:** a doc criterion that asks for a "report", findings, or everything to record. Cyrus will put measurements, history, and design rationale into `docs/`. Doc criteria should name the file and what a reader must be able to do with it (run it, query it, extend it); findings go in the PR.
 - **Blocked or contradictory:** unresolved blockers on a queued issue; text implying a dependency that the relations do not show (and the reverse); statements that conflict with comments or the parent.
 - **Iterations and quota:** expected rounds as written and after the suggested changes. The user is on a subscription plan, so report quota use, not dollars: relative size, and pressure on the 5-hour window. Verification loops multiply token use, so few cheap checks beat many open-ended ones.
 - **Model and effort:** recommend a tier and effort for the issue as written (baseline is the issue's `[model=<model>]` tag if present, otherwise default Sonnet; Haiku only for mechanical, tightly specified changes; Opus only for cross-cutting design or repeated failures), and again for after the suggested changes.
@@ -75,7 +77,7 @@ For every URL and embed in the issue and its parent:
 - Prefer information in the description itself, then the repo, then Linear documents; embeds and links come last.
 
 ### 5. Write the draft and reply with the report
-Write `draft.md` with YAML frontmatter `issue: <ISSUE-ID>` followed by the proposed rewritten description (goal, objective, acceptance criteria, out of scope, process notes, references), and save `base.json`. Then reply with the report, using the template below, as the chat response. Do not touch Linear.
+Write `draft.md` with YAML frontmatter `issue: <ISSUE-ID>` followed by the proposed rewritten description (goal, objective, acceptance criteria, out of scope, process notes, references), and save `base.json`. Acceptance criteria that ask for verification name an example input (e.g. an attached log) and the result to show in the PR (e.g. the parsed output beside a plain database query), using only what the issue ships plus standard tools. Reword any that could only be met by a verification-only command, flag, column, or mode. Then reply with the report, using the template below, as the chat response. Do not touch Linear.
 
 ## Report template
 
